@@ -28,10 +28,12 @@ from urllib.parse import parse_qs, unquote, urlencode, urlparse
 from urllib.request import Request, urlopen
 
 try:
-    from PIL import Image, ImageDraw, ImageFilter, ImageFont
+    from PIL import Image, ImageDraw, ImageFilter, ImageFont, features
     HAVE_PIL = True
+    HAVE_WEBP = features.check("webp")
 except ImportError:  # pragma: no cover - depends on the runtime image
     HAVE_PIL = False
+    HAVE_WEBP = False
 
 DATA_FILE = Path("/data/canvases.json")
 UPLOAD_DIR = Path("/data/uploads")
@@ -41,6 +43,13 @@ SUPERVISOR_API = "http://supervisor/core/api"
 
 CANVAS_MIN, CANVAS_MAX = 64, 4096
 ELEMENT_TYPES = ("text", "image", "entity")
+# Per-element attention animations. "none" renders the element as designed; every
+# other kind returns to the design pose at the start of each cycle, so the still
+# PNG/JPG (frame 0) is always the untouched layout.
+ANIMATIONS = ("none", "jump", "pulse", "blink", "shake", "wobble", "slide")
+ANIMATION_DEFAULTS = {"jump": 26, "shake": 14, "slide": 180, "wobble": 9, "pulse": 16, "blink": 0}
+ANIMATION_FRAMES = 16          # frames per cycle when rendering an animated image
+ANIMATED_FORMATS = ("GIF", "WEBP")
 ALIGNMENTS = ("left", "center", "right")
 UPLOAD_TYPES = {"image/png": ".png", "image/jpeg": ".jpg", "image/webp": ".webp", "image/gif": ".gif"}
 UPLOAD_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,120}$")
@@ -430,6 +439,13 @@ def clean_element(payload: dict, existing: dict | None = None) -> dict:
         "opacity": clamp_number(payload.get("opacity", existing.get("opacity")), 0, 100, 100),
         "visible": as_flag(payload.get("visible", existing.get("visible")), True),
     }
+    # Animation applies to every element kind.
+    animation = str(payload.get("animation", existing.get("animation", "none"))).strip().lower()
+    element.update({
+        "animation": animation if animation in ANIMATIONS else "none",
+        "animation_speed": clamp_number(payload.get("animation_speed", existing.get("animation_speed")), 0.2, 10, 1.2),
+        "animation_amount": clamp_number(payload.get("animation_amount", existing.get("animation_amount")), 0, 600, 0),
+    })
     if kind == "image":
         element.update({
             "file": as_text(payload.get("file", existing.get("file", "")), 128),
@@ -780,15 +796,143 @@ def state_lookup(needed: bool):
         return lambda entity_id: None
 
 
+def animation_offset(element: dict, progress: float) -> dict:
+    """Where an element sits inside its animation cycle (progress 0..1).
+
+    Every kind is back at the design pose at progress 0, so a still render is
+    always the canvas exactly as it was laid out, and an animated loop returns to
+    it every cycle."""
+    kind = str(element.get("animation", "none"))
+    if kind not in ANIMATIONS or kind == "none":
+        return {"dx": 0.0, "dy": 0.0, "scale": 1.0, "opacity": 1.0, "rotate": 0.0}
+    amount = number(element.get("animation_amount"), 0) or ANIMATION_DEFAULTS.get(kind, 0)
+    angle = 2 * math.pi * progress
+    if kind == "jump":
+        return {"dx": 0.0, "dy": -amount * abs(math.sin(math.pi * progress)),
+                "scale": 1.0, "opacity": 1.0, "rotate": 0.0}
+    if kind == "shake":
+        return {"dx": amount * math.sin(2 * angle), "dy": 0.0,
+                "scale": 1.0, "opacity": 1.0, "rotate": 0.0}
+    if kind == "wobble":
+        return {"dx": 0.0, "dy": 0.0, "scale": 1.0, "opacity": 1.0, "rotate": amount * math.sin(angle)}
+    if kind == "pulse":
+        # amount is a percentage here: 16 grows the element by 16% at the peak
+        return {"dx": 0.0, "dy": 0.0, "scale": 1 + (amount / 100) * math.sin(angle),
+                "opacity": 1.0, "rotate": 0.0}
+    if kind == "blink":
+        return {"dx": 0.0, "dy": 0.0, "scale": 1.0,
+                "opacity": 1.0 if progress < 0.5 else 0.12, "rotate": 0.0}
+    # slide: glide in from the left, then hold until the cycle restarts
+    return {"dx": -amount * max(0.0, 1 - min(1.0, progress / 0.45)), "dy": 0.0,
+            "scale": 1.0, "opacity": 1.0, "rotate": 0.0}
+
+
+def animation_cycles(element: dict, period: float) -> int:
+    """How many of an element's own cycles fit in the shared animation period.
+
+    Rounding to a whole number is what keeps the animated image seamless when
+    elements ask for different speeds."""
+    speed = clamp_number(element.get("animation_speed"), 0.2, 10, 1.2)
+    return max(1, int(round(period / speed))) if period > 0 else 1
+
+
+def canvas_animates(canvas: dict) -> bool:
+    return any(as_flag(item.get("visible"), True) and str(item.get("animation", "none")) not in ("", "none")
+               for item in canvas.get("elements", []))
+
+
+def animation_period(canvas: dict) -> float:
+    speeds = [clamp_number(item.get("animation_speed"), 0.2, 10, 1.2)
+              for item in canvas.get("elements", [])
+              if as_flag(item.get("visible"), True) and str(item.get("animation", "none")) not in ("", "none")]
+    return max(speeds) if speeds else 1.2
+
+
+def draw_frame(canvas: dict, out_width: int, out_height: int, scale: float,
+               elapsed: float, period: float, lookup) -> Image.Image:
+    """One frame of the canvas, `elapsed` seconds into the shared period."""
+    background = canvas.get("background") or {}
+    colour = as_colour(background.get("color"), "#0f172a")
+    source = background_image(canvas)
+    if source is not None:
+        image = fit_background(source, out_width, out_height, str(background.get("fit", "cover")), colour)
+    else:
+        image = Image.new("RGB", (out_width, out_height), hex_rgb(colour))
+
+    for element in canvas.get("elements", []):
+        if not as_flag(element.get("visible"), True):
+            continue
+        built = (image_layer(element, scale) if element.get("type") == "image"
+                 else text_layer(element, element_text(element, lookup), scale))
+        if built is None:
+            continue  # a missing upload must not lose the rest of the canvas
+        layer, (content_width, content_height) = built
+        # Progress through *this element's* cycle: the shared period divided by the
+        # element's own speed, so a 0.6s hop runs twice inside a 1.2s period.
+        cycles = animation_cycles(element, period)
+        motion = animation_offset(element, (elapsed * cycles / period) % 1.0 if period else 0.0)
+        if motion["scale"] != 1.0:
+            layer = layer.resize((max(1, int(round(layer.width * motion["scale"]))),
+                                  max(1, int(round(layer.height * motion["scale"])))), RESAMPLE)
+            content_width *= motion["scale"]
+            content_height *= motion["scale"]
+        layer = apply_alpha(rotate_layer(layer, number(element.get("rotation"), 0) + motion["rotate"]),
+                            clamp_number(element.get("opacity"), 0, 100, 100) * motion["opacity"])
+        # Rotate about the element's own centre and put that centre where the
+        # element's box puts it, offset by any animation movement — the same
+        # thing CSS does with its default transform-origin.
+        centre_x = number(element.get("x"), 0) * scale + content_width / 2 + motion["dx"] * scale
+        centre_y = number(element.get("y"), 0) * scale + content_height / 2 + motion["dy"] * scale
+        image.paste(layer, (int(round(centre_x - layer.width / 2)), int(round(centre_y - layer.height / 2))), layer)
+    return image
+
+
+def encode_image(image: Image.Image, frames: list[Image.Image], image_format: str,
+                 duration_ms: int | None = None) -> tuple[bytes, str]:
+    """Encode one image, or a list of frames as an animated GIF/WebP."""
+    buffer = io.BytesIO()
+    kind = image_format.upper()
+    if kind in ANIMATED_FORMATS and frames:
+        if kind == "WEBP":
+            image.save(buffer, format="WEBP", save_all=True, append_images=frames, duration=duration_ms,
+                       loop=0, quality=82, method=4)
+            return buffer.getvalue(), "image/webp"
+        # Full frames rather than optimised partial ones: partial-frame GIFs need
+        # matching disposal handling in every viewer, and some media players get
+        # that wrong (visible smearing).
+        image.save(buffer, format="GIF", save_all=True, append_images=frames, duration=duration_ms,
+                   loop=0, disposal=2)
+        return buffer.getvalue(), "image/gif"
+    if kind == "GIF":
+        image.convert("RGB").save(buffer, format="GIF")           # one frame, still a GIF
+        return buffer.getvalue(), "image/gif"
+    if kind == "WEBP":
+        image.convert("RGB").save(buffer, format="WEBP", quality=88, method=4)
+        return buffer.getvalue(), "image/webp"
+    if kind in ("JPG", "JPEG"):
+        image.convert("RGB").save(buffer, format="JPEG", quality=88, optimize=True)
+        return buffer.getvalue(), "image/jpeg"
+    image.convert("RGB").save(buffer, format="PNG", optimize=True)
+    return buffer.getvalue(), "image/png"
+
+
 def render_canvas(canvas: dict, width: int | None = None, height: int | None = None,
-                  image_format: str = "PNG") -> tuple[bytes, str]:
+                  image_format: str = "PNG", frames: int | None = None) -> tuple[bytes, str]:
     """Render a canvas to image bytes. `width`/`height` scale the whole design
     (geometry and font sizes together, so text stays sharp) instead of resizing
-    the finished picture."""
+    the finished picture.
+
+    Animated elements turn a GIF/WebP request into a looping animation; every
+    other format (and a canvas with no animation) yields the rest pose."""
     if not HAVE_PIL:
         raise ValueError("Image rendering needs Pillow, which this app image does not have.")
     design_width = max(1, int(number(canvas.get("width"), 1280)))
     design_height = max(1, int(number(canvas.get("height"), 720)))
+    animated = canvas_animates(canvas) and image_format.upper() in ANIMATED_FORMATS
+    if animated and not width and not height:
+        # Sixteen full frames at 1920px is a multi-megabyte download for a media
+        # player; cap the default animated size (override with ?w=/?h=).
+        width = min(design_width, 720)
     if width and height:
         scale = min(width / design_width, height / design_height)
     elif width:
@@ -806,39 +950,29 @@ def render_canvas(canvas: dict, width: int | None = None, height: int | None = N
 
     needs_states = any(item.get("type") == "entity" or (TOKEN_RE.search(str(item.get("text", ""))) is not None)
                        for item in canvas.get("elements", []))
+    # One state read per render, shared by every frame.
     lookup = state_lookup(needs_states)
-    background = canvas.get("background") or {}
-    colour = as_colour(background.get("color"), "#0f172a")
-    source = background_image(canvas)
-    if source is not None:
-        image = fit_background(source, out_width, out_height, str(background.get("fit", "cover")), colour)
-    else:
-        image = Image.new("RGB", (out_width, out_height), hex_rgb(colour))
 
-    for element in canvas.get("elements", []):
-        if not as_flag(element.get("visible"), True):
-            continue
-        built = (image_layer(element, scale) if element.get("type") == "image"
-                 else text_layer(element, element_text(element, lookup), scale))
-        if built is None:
-            continue  # a missing upload must not lose the rest of the canvas
-        layer, (content_width, content_height) = built
-        layer = apply_alpha(rotate_layer(layer, number(element.get("rotation"), 0)),
-                            clamp_number(element.get("opacity"), 0, 100, 100))
-        # Rotate about the element's own centre and put that centre where the
-        # element's box puts it — the same thing CSS does with its default
-        # transform-origin, so a rotated element lands in the same place in the
-        # editor and in the image.
-        centre_x = number(element.get("x"), 0) * scale + content_width / 2
-        centre_y = number(element.get("y"), 0) * scale + content_height / 2
-        image.paste(layer, (int(round(centre_x - layer.width / 2)), int(round(centre_y - layer.height / 2))), layer)
+    if not animated:
+        return encode_image(draw_frame(canvas, out_width, out_height, scale, 0.0, 0.0, lookup), [], image_format)
 
-    buffer = io.BytesIO()
-    if image_format.upper() in ("JPG", "JPEG"):
-        image.convert("RGB").save(buffer, format="JPEG", quality=88, optimize=True)
-        return buffer.getvalue(), "image/jpeg"
-    image.convert("RGB").save(buffer, format="PNG", optimize=True)
-    return buffer.getvalue(), "image/png"
+    period = animation_period(canvas)
+    wanted = int(clamp_number(frames, 4, 60, ANIMATION_FRAMES))
+    # Two constraints on the frame count, both about playing the animation
+    # properly rather than merely looking right in one viewer:
+    #  * GIF/WebP store delays in 10ms steps, so the count must divide the cycle
+    #    into whole 10ms frames or the whole animation drifts off-speed;
+    #  * an even count avoids sampling two identical poses either side of a
+    #    symmetric peak (a "jump" does exactly that), which encoders merge into
+    #    one longer frame.
+    candidates = [count for count in range(4, 61)
+                  if count % 2 == 0 and round(period * 1000 / count) % 10 == 0]
+    count = (min(candidates, key=lambda value: (abs(value - wanted), -value))
+             if candidates else wanted)
+    duration = max(20, int(round(period * 1000 / count / 10.0)) * 10)
+    rendered = [draw_frame(canvas, out_width, out_height, scale, period * index / count, period, lookup)
+                for index in range(count)]
+    return encode_image(rendered[0], rendered[1:], image_format, duration)
 
 
 # --------------------------------------------------------------------------- #
@@ -918,7 +1052,10 @@ class Handler(BaseHTTPRequestHandler):
 
     def image_format(self, suffix: str | None = None) -> str:
         requested = (suffix or self.query().get("format", [""])[0] or "").lower()
-        return "JPEG" if requested in ("jpg", "jpeg") else "PNG"
+        if requested in ("jpg", "jpeg"): return "JPEG"
+        if requested == "gif": return "GIF"
+        if requested == "webp": return "WEBP" if HAVE_WEBP else "GIF"   # no libwebp: GIF instead
+        return "PNG"
 
     # -- pages --------------------------------------------------------------
     def editor(self) -> None:
@@ -950,8 +1087,11 @@ class Handler(BaseHTTPRequestHandler):
                 cached = RENDER_CACHE.get(key)
                 if cached and time.time() - cached[0] < RENDER_TTL:
                     return self.send_bytes(cached[1][0], cached[1][1])
+        frames = int(clamp_number(self.query().get("frames", [""])[0], 4, 60, ANIMATION_FRAMES))
+        # The frame count changes the bytes, so it belongs in the cache key.
+        key = key + (frames,)
         try:
-            data, content_type = render_canvas(canvas, width, height, image_format)
+            data, content_type = render_canvas(canvas, width, height, image_format, frames)
         except ValueError as error:
             return self.send_json({"error": str(error)}, 502)
         with RENDER_LOCK:
@@ -968,8 +1108,9 @@ class Handler(BaseHTTPRequestHandler):
         except (ValueError, json.JSONDecodeError) as error:
             return self.send_json({"error": str(error)}, 400)
         width, height = self.size_params()
+        frames = int(clamp_number(self.query().get("frames", [""])[0], 4, 60, ANIMATION_FRAMES))
         try:
-            data, content_type = render_canvas(canvas, width, height, self.image_format())
+            data, content_type = render_canvas(canvas, width, height, self.image_format(), frames)
         except ValueError as error:
             return self.send_json({"error": str(error)}, 502)
         self.send_bytes(data, content_type)
@@ -1143,7 +1284,7 @@ class Handler(BaseHTTPRequestHandler):
             return self.uploads()
         if path == "/api/fonts":
             return self.send_json({"items": font_choices(), "aliases": FONT_ALIASES, "default": DEFAULT_FONT})
-        canvas_match = re.fullmatch(r"/canvas/([a-z0-9-]+)(?:\.(png|jpg|jpeg))?", path)
+        canvas_match = re.fullmatch(r"/canvas/([a-z0-9-]+)(?:\.(png|jpg|jpeg|gif|webp))?", path)
         if canvas_match:
             return self.canvas_image(canvas_match.group(1), canvas_match.group(2))
         font_match = re.fullmatch(r"/fonts/([a-z0-9-]+)", path)

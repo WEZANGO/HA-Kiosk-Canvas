@@ -149,6 +149,49 @@ Battery: {{sensor.phone.battery_level}}%
 An entity that is missing, `unknown` or `unavailable` renders as `—`, so a media
 screen never shows the word "unavailable" in the middle of a message.
 
+## Animations
+
+Any element can move, to catch the eye on a screen that is being looked at from
+across a room. Per element: pick an **Animation**, then **Seconds per cycle** and
+an **Amount** (0 = the natural size for that effect, shown next to the field).
+
+| Animation | What it does | Default amount |
+| --- | --- | --- |
+| Jump up and down | hops up and back, one hop per cycle | 26 px |
+| Pulse | grows and shrinks | 16 % |
+| Blink | flashes on and off | - |
+| Shake | jitters left and right | 14 px |
+| Wobble | rocks side to side | 9° |
+| Slide in from the left | glides in and holds, repeating | 180 px |
+
+Fetch the animation from an animated URL — the still URLs keep working:
+
+```
+/canvas/<id>.gif      animated GIF   (plays anywhere an image plays)
+/canvas/<id>.webp     animated WebP  (smaller, better quality, less universal)
+/canvas/<id>.png      one frame: the resting pose, i.e. exactly the design
+```
+
+- `?frames=8` renders fewer frames (smaller file, choppier). The frame delay is
+  derived from the cycle so the animation runs at the speed you set.
+- `?w=` / `?h=` still apply. Animated output defaults to **720 px wide** when you
+  do not pass a size, because a dozen-plus full frames at 1080p is a heavy file
+  for a media device to pull.
+- The cycle time is exact: frame delays are chosen on GIF's 10 ms grid, so an
+  "every 1.2 s" hop loops every 1.2 s.
+
+Which format for which device: **animated GIF** is the safe default — browsers,
+dashboards, kiosk browsers and most media players show it. Some cast devices and
+TV apps only render the first frame of a GIF or WebP; those want video instead
+(MP4/WebM), which is not generated here because it needs ffmpeg in the add-on
+image (available as an option if you need it — it makes the add-on a good deal
+bigger). When a player shows a still, it shows the resting pose rather than
+nothing.
+
+Animated images are much larger than stills (roughly 5-20x for the same canvas);
+they are re-rendered on request like any other canvas, so keep an eye on size if
+a device polls the URL often.
+
 ## Fonts
 
 The add-on image installs these families, and the editor's font list is built

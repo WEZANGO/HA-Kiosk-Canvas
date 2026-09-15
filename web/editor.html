@@ -44,7 +44,30 @@
       repeating-conic-gradient(#0d1526 0% 25%, #101b2e 0% 50%) 50% / 24px 24px; }
   #stage { position: relative; background: #0f172a; box-shadow: 0 18px 50px rgba(0,0,0,.55); transform-origin: center; }
   #stage img.bg { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
-  .el { position: absolute; transform-origin: center center; user-select: none; white-space: pre-wrap; cursor: move; }
+  .el { position: absolute; transform-origin: center center; user-select: none; white-space: pre-wrap; cursor: move;
+        transform: rotate(var(--rot, 0deg)); }
+  /* Animation previews. The same poses the renderer produces for the animated
+     GIF/WebP, so what you see here is what plays on the screen. Amplitudes and
+     speeds come from the element via CSS variables. */
+  @keyframes kc-jump { 0%, 100% { transform: translateY(0) rotate(var(--rot, 0deg)); }
+                       50% { transform: translateY(calc(-1 * var(--amt, 26px))) rotate(var(--rot, 0deg)); } }
+  @keyframes kc-shake { 0%, 100% { transform: translateX(0) rotate(var(--rot, 0deg)); }
+                        25% { transform: translateX(var(--amt, 14px)) rotate(var(--rot, 0deg)); }
+                        75% { transform: translateX(calc(-1 * var(--amt, 14px))) rotate(var(--rot, 0deg)); } }
+  @keyframes kc-wobble { 0%, 100% { transform: rotate(var(--rot, 0deg)); }
+                         25% { transform: rotate(calc(var(--rot, 0deg) + var(--amtdeg, 9deg))); }
+                         75% { transform: rotate(calc(var(--rot, 0deg) - var(--amtdeg, 9deg))); } }
+  @keyframes kc-pulse { 0%, 100% { transform: scale(1) rotate(var(--rot, 0deg)); }
+                        50% { transform: scale(calc(1 + var(--amtf, 0.16))) rotate(var(--rot, 0deg)); } }
+  @keyframes kc-blink { 0%, 49% { opacity: 1; } 50%, 100% { opacity: .12; } }
+  @keyframes kc-slide { 0% { transform: translateX(calc(-1 * var(--amt, 180px))) rotate(var(--rot, 0deg)); }
+                        45%, 100% { transform: translateX(0) rotate(var(--rot, 0deg)); } }
+  .el.anim-jump { animation: kc-jump var(--speed, 1.2s) ease-in-out infinite; }
+  .el.anim-shake { animation: kc-shake var(--speed, 1.2s) linear infinite; }
+  .el.anim-wobble { animation: kc-wobble var(--speed, 1.2s) ease-in-out infinite; }
+  .el.anim-pulse { animation: kc-pulse var(--speed, 1.2s) ease-in-out infinite; }
+  .el.anim-blink { animation: kc-blink var(--speed, 1.2s) step-end infinite; }
+  .el.anim-slide { animation: kc-slide var(--speed, 1.2s) ease-out infinite; }
   .el.text, .el.entity { text-shadow: 0 1px 3px rgba(0,0,0,.85); line-height: 1.15; }
   .el img { display: block; width: 100%; height: 100%; pointer-events: none; }
   .el .txt { display: block; }
@@ -381,14 +404,29 @@
     return lines.join('\n');
   }
 
+  // Amplitudes/speeds the controls fall back to when the amount is 0. The
+  // renderer uses the same defaults, so 0 means "the natural size for this effect".
+  const ANIM_DEFAULTS = { jump: 26, shake: 14, slide: 180, wobble: 9, pulse: 16, blink: 0 };
+  const ANIM_KINDS = [
+    ['none', 'None (still)'], ['jump', 'Jump up and down'], ['pulse', 'Pulse (grow / shrink)'],
+    ['blink', 'Blink (on / off)'], ['shake', 'Shake sideways'], ['wobble', 'Wobble (rock sideways)'],
+    ['slide', 'Slide in from the left'],
+  ];
+
   function elementNodeFor(item) {
     const node = document.createElement('div');
-    node.className = `el ${item.type}`;
+    const kind = ANIM_KINDS.some(entry => entry[0] === item.animation) ? item.animation : 'none';
+    node.className = `el ${item.type}${kind === 'none' ? '' : ` anim-${kind}`}`;
     node.dataset.id = item.id;
     node.style.left = `${Number(item.x) || 0}px`;
     node.style.top = `${Number(item.y) || 0}px`;
     node.style.opacity = (or(item.opacity, 100)) / 100;
-    node.style.transform = `rotate(${Number(item.rotation) || 0}deg)`;
+    const amount = Number(item.animation_amount) || 0;
+    node.style.setProperty('--rot', `${Number(item.rotation) || 0}deg`);
+    node.style.setProperty('--speed', `${Math.max(0.2, Number(item.animation_speed) || 1.2)}s`);
+    node.style.setProperty('--amt', `${amount || ANIM_DEFAULTS[kind] || 0}px`);
+    node.style.setProperty('--amtdeg', `${amount || ANIM_DEFAULTS[kind] || 9}deg`);
+    node.style.setProperty('--amtf', String((amount || ANIM_DEFAULTS[kind] || 16) / 100));
     if (item.visible === false) node.style.display = 'none';
     if (item.type === 'image') {
       const image = document.createElement('img');
@@ -991,6 +1029,8 @@
       input('number', or(item.opacity, 100), value => update('opacity', value), { min: 0, max: 100, step: 5 }));
     row2.append(rot, op);
     body.append(row2);
+    // Animation: what makes a notification canvas catch the eye on a screen.
+    body.append(animationFields(item, update));
     const actions = document.createElement('div');
     actions.className = 'add-row';
     const dup = document.createElement('button');
@@ -1069,7 +1109,9 @@
     if (!previewOn || previewBusy) return;
     previewBusy = true;
     try {
-      const response = await fetch(api('api/preview'), {
+      // Preview the animated output when something moves, so the preview shows
+      // exactly what a media player would play back.
+      const response = await fetch(api(`api/preview?format=${canvasAnimates() ? 'gif' : 'png'}`), {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(canvas)
       });
       if (!response.ok) {
@@ -1164,6 +1206,38 @@
     setStatus('Saved');
     if (previewOn) drawPreview();
   }
+  const ANIM_KEY = /^(jump|pulse|blink|shake|wobble|slide)$/;
+  const canvasAnimates = () => canvas.elements.some(item => item.visible !== false && ANIM_KEY.test(String(item.animation || '')));
+
+  function animationFields(item, update) {
+    const kind = ANIM_KINDS.some(entry => entry[0] === item.animation) ? item.animation : 'none';
+    const wrap = document.createElement('div');
+    wrap.append(field('Animation', select(ANIM_KINDS, kind, value => update('animation', value))));
+    if (kind === 'none') {
+      const still = document.createElement('p');
+      still.className = 'hint';
+      still.textContent = 'Static: the image URLs return a single frame. Pick an effect to attract attention on screen.';
+      wrap.append(still);
+      return wrap;
+    }
+    const unit = kind === 'pulse' ? '%' : kind === 'wobble' ? '\u00b0' : 'px';
+    const row = document.createElement('div');
+    row.className = 'field row';
+    const speed = document.createElement('div');
+    speed.append(Object.assign(document.createElement('label'), { textContent: 'Seconds per cycle' }),
+      input('number', or(item.animation_speed, 1.2), value => update('animation_speed', value), { min: 0.2, max: 10, step: 0.1 }));
+    const amount = document.createElement('div');
+    amount.append(Object.assign(document.createElement('label'), { textContent: `Amount (${unit})` }),
+      input('number', or(item.animation_amount, 0), value => update('animation_amount', value),
+            { min: 0, max: kind === 'pulse' ? 200 : 600, step: 1 }));
+    row.append(speed, amount);
+    const hint = document.createElement('p');
+    hint.className = 'hint';
+    hint.textContent = `Amount 0 = default (${ANIM_DEFAULTS[kind]}${unit}). Use an Animated GIF/WebP URL `
+      + '(listed on the right) to play it; PNG/JPG always show the resting pose.';
+    wrap.append(row, hint);
+    return wrap;
+  }
   function renderUrls() {
     const box = $('urls');
     box.textContent = '';
@@ -1174,12 +1248,19 @@
       box.append(hint);
       return;
     }
+    const animated = canvasAnimates();
     const rows = [
       ['PNG', directUrl(`/canvas/${canvas.id}.png`)],
       ['JPG', directUrl(`/canvas/${canvas.id}.jpg`)],
       ['Scale down', directUrl(`/canvas/${canvas.id}.png`, '&w=1280&h=720')],
       ['In Home Assistant (relative)', api(`canvas/${canvas.id}.png`)]
     ];
+    if (animated) {
+      // Only worth advertising when something actually moves; the still URLs
+      // above stay valid either way (they show the resting pose).
+      rows.splice(0, 0, ['Animated GIF', directUrl(`/canvas/${canvas.id}.gif`)],
+                  ['Animated WebP', directUrl(`/canvas/${canvas.id}.webp`)]);
+    }
     for (const [label, value] of rows) {
       const line = document.createElement('div');
       line.className = 'url-line';

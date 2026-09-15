@@ -24,6 +24,7 @@ accept an image URL — not a Lovelace dashboard. This add-on gives you those UR
   entity elements, drag to move, drag the corner handle to scale, rotate, fade,
   reorder layers, hide without deleting, snap to an 8px grid (hold ⌥/Alt for
   free positioning, arrows to nudge).
+- **Animations** per element (jump, pulse, blink, shake, wobble, slide) served as animated GIF/WebP.
 - **Live entity values**: an entity element shows the entity's state (or any
   attribute) with its unit, a chosen number of decimals and optional prefix and
   suffix text. Custom text can also embed `{{sensor.entity_id}}` or
