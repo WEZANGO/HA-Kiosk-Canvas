@@ -69,6 +69,22 @@
   #toast { position: fixed; left: 50%; bottom: 22px; transform: translateX(-50%); background: #14532d; border: 1px solid #22c55e; color: #f0fdf4; padding: 9px 16px; border-radius: 8px; opacity: 0; transition: opacity .2s; pointer-events: none; }
   #toast.show { opacity: 1; }
   #toast.error { background: #7f1d1d; border-color: #ef4444; }
+  .swatches { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 6px; }
+  .swatch { width: 22px; height: 22px; padding: 0; border-radius: 5px; border: 1px solid #475569; cursor: pointer; }
+  .swatch:hover { border-color: #38bdf8; }
+  .swatch.current { outline: 2px solid #38bdf8; outline-offset: 1px; }
+  .upload-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; margin-top: 7px; }
+  .upload-cell { position: relative; aspect-ratio: 1 / 1; border: 1px solid #334155; border-radius: 7px; background: #0b1222; cursor: pointer; display: grid; place-items: center; overflow: hidden; }
+  .upload-cell:hover { border-color: #38bdf8; }
+  .upload-cell.selected { border-color: #38bdf8; box-shadow: 0 0 0 1px #38bdf8 inset; }
+  .upload-cell img { max-width: 100%; max-height: 100%; object-fit: contain; pointer-events: none; }
+  .upload-none { color: #64748b; font-size: 1.1rem; }
+  .upload-delete { position: absolute; top: 2px; right: 2px; padding: 1px 5px; font-size: .7rem; line-height: 1.3; background: rgba(127,29,29,.9); border: 1px solid #b91c1c; border-radius: 5px; opacity: 0; transition: opacity .15s; }
+  .upload-cell:hover .upload-delete { opacity: 1; }
+  .upload-delete[data-armed="1"] { opacity: 1; background: #b91c1c; font-weight: 700; }
+  .saved-size { display: flex; align-items: center; gap: 7px; padding: 5px 8px; border: 1px solid #334155; border-radius: 6px; margin-bottom: 5px; font-size: .82rem; }
+  .saved-size span { flex: 1; color: #cbd5e1; }
+  .saved-size button { padding: 2px 7px; font-size: .75rem; }
   .entity-hit { display: block; width: 100%; text-align: left; padding: 6px 8px; border-radius: 6px; background: #0b1222; border: 1px solid #334155; margin-bottom: 4px; font-size: .8rem; }
   .entity-hit:hover { border-color: #38bdf8; }
   .entity-hit .sub { display: block; color: #94a3b8; font-size: .72rem; }
@@ -228,6 +244,34 @@
   function newId() { return Math.random().toString(36).slice(2, 12); }
 
   let canvases = [], canvas = blankCanvas(), selectedId = null, dirty = false;
+
+  // Recent colours and custom canvas sizes are remembered in this browser (there
+  // is no Home Assistant-side store for editor preferences, and they are not
+  // worth backing up with the canvases).
+  const COLOUR_STORE = 'kiosk-canvas-recent-colours';
+  const SIZE_STORE = 'kiosk-canvas-custom-sizes';
+  let recentColours = [];
+  let savedSizes = [];
+  function loadEditorPrefs() {
+    try {
+      recentColours = JSON.parse(localStorage.getItem(COLOUR_STORE) || '[]')
+        .filter(colour => /^#[0-9a-f]{6}$/i.test(colour)).slice(0, 12);
+    } catch (error) { recentColours = []; }
+    try {
+      savedSizes = JSON.parse(localStorage.getItem(SIZE_STORE) || '[]')
+        .filter(size => size && size.label && size.width > 0 && size.height > 0).slice(0, 20);
+    } catch (error) { savedSizes = []; }
+  }
+  function rememberColour(colour) {
+    if (!colour) return;
+    const value = String(colour).toLowerCase();
+    if (!/^#[0-9a-f]{6}$/.test(value)) return;
+    recentColours = [value].concat(recentColours.filter(entry => entry !== value)).slice(0, 12);
+    try { localStorage.setItem(COLOUR_STORE, JSON.stringify(recentColours)); } catch (error) { /* private mode */ }
+  }
+  function saveSizes() {
+    try { localStorage.setItem(SIZE_STORE, JSON.stringify(savedSizes)); } catch (error) { /* private mode */ }
+  }
   let fit = 1, previewOn = false, previewTimer = null, previewClock = null, previewBusy = false;
   const valueCache = {};                 // "entity|attr|decimals|unit" -> server-formatted entry
   const measure = document.createElement('canvas').getContext('2d');
@@ -657,6 +701,199 @@
     return wrap;
   }
 
+  // Colour input with the colours used recently underneath, one tap to reuse.
+  function colourField(label, value, onChange) {
+    const wrap = document.createElement('div');
+    wrap.className = 'field';
+    const caption = document.createElement('label');
+    caption.textContent = label;
+    const picker = document.createElement('input');
+    picker.type = 'color';
+    picker.value = value || '#ffffff';
+    picker.addEventListener('input', () => onChange(picker.value));
+    picker.addEventListener('change', () => { rememberColour(picker.value); renderInspector(); });
+    wrap.append(caption, picker);
+    if (recentColours.length) {
+      const row = document.createElement('div');
+      row.className = 'swatches';
+      for (const colour of recentColours) {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'swatch' + (colour === String(value || '').toLowerCase() ? ' current' : '');
+        button.style.background = colour;
+        button.title = colour;
+        button.onclick = () => { rememberColour(colour); onChange(colour); renderInspector(); };
+        row.append(button);
+      }
+      wrap.append(row);
+    }
+    return wrap;
+  }
+
+  // Uploaded images as a grid of thumbnails: tap to use, ✕ (twice) to delete.
+  function uploadCell(name, selected, onPick) {
+    const cell = document.createElement('div');
+    cell.className = 'upload-cell' + (selected ? ' selected' : '');
+    cell.title = name || 'No image';
+    if (name) {
+      const image = document.createElement('img');
+      image.src = api('uploads/' + encodeURIComponent(name) + '?w=120');
+      image.alt = name;
+      image.loading = 'lazy';
+      cell.append(image);
+    } else {
+      const none = document.createElement('div');
+      none.className = 'upload-none';
+      none.textContent = '∅';
+      cell.append(none);
+    }
+    if (name) {
+      const remove = document.createElement('button');
+      remove.type = 'button';
+      remove.className = 'upload-delete';
+      remove.textContent = '✕';
+      remove.title = 'Delete this image';
+      remove.onclick = async event => {
+        event.stopPropagation();
+        // Two taps, like the canvas delete: HA iframes block native confirm().
+        if (remove.dataset.armed !== '1') {
+          remove.dataset.armed = '1';
+          remove.textContent = '?';
+          setTimeout(() => { if (remove.isConnected) { remove.dataset.armed = ''; remove.textContent = '✕'; } }, 2500);
+          return;
+        }
+        const usedHere = canvas.elements.some(entry => entry.file === name)
+          || (canvas.background && canvas.background.image === name);
+        if (usedHere) {
+          toast('This canvas is using that image — choose another image first', true);
+          remove.dataset.armed = '';
+          remove.textContent = '✕';
+          return;
+        }
+        try {
+          await request(`api/uploads/${encodeURIComponent(name)}`, { method: 'DELETE' });
+          await loadUploads();
+          renderInspector();
+          toast('Image deleted');
+        } catch (error) {
+          toast(error.message, true);   // e.g. still used by a canvas
+          remove.dataset.armed = '';
+          remove.textContent = '✕';
+        }
+      };
+      cell.append(remove);
+    }
+    cell.onclick = () => onPick(name);
+    return cell;
+  }
+
+  function imagePicker(kind, current, onPick) {
+    const wrap = document.createElement('div');
+    wrap.className = 'field';
+    const caption = document.createElement('label');
+    caption.textContent = kind === 'background' ? 'Background image' : 'Image';
+    const file = document.createElement('input');
+    file.type = 'file';
+    file.accept = 'image/png,image/jpeg,image/webp,image/gif';
+    file.addEventListener('change', async () => {
+      if (!file.files.length) return;
+      try {
+        setStatus('Uploading…');
+        const uploaded = await upload(file.files[0]);
+        onPick(uploaded.name);
+        renderInspector();
+        setStatus('Uploaded');
+      } catch (error) { setStatus(error.message, true); }
+    });
+    wrap.append(caption, file);
+    const grid = document.createElement('div');
+    grid.className = 'upload-grid';
+    // Both pickers can clear their image: the cell with no thumbnail is "none".
+    grid.append(uploadCell('', !current, onPick));
+    for (const name of uploads) grid.append(uploadCell(name, name === current, onPick));
+    if (!uploads.length) {
+      const empty = document.createElement('p');
+      empty.className = 'hint';
+      empty.textContent = 'No images yet — upload a PNG or JPG above.';
+      wrap.append(empty);
+    } else {
+      wrap.append(grid);
+    }
+    return wrap;
+  }
+
+  // Custom canvas sizes, saved in this browser and offered in the size list.
+  function savedSizesField() {
+    const wrap = document.createElement('div');
+    wrap.className = 'field';
+    const caption = document.createElement('label');
+    caption.textContent = 'Save this canvas size for reuse';
+    const row = document.createElement('div');
+    row.style.display = 'flex';
+    row.style.gap = '6px';
+    const name = document.createElement('input');
+    name.type = 'text';
+    name.placeholder = `e.g. Kitchen panel (${canvas.width}×${canvas.height})`;
+    const save = document.createElement('button');
+    save.type = 'button';
+    save.textContent = 'Save';
+    const commit = () => {
+      const label = (name.value || `${canvas.width}×${canvas.height}`).trim().slice(0, 40);
+      const entry = { label: label, width: canvas.width, height: canvas.height };
+      const existing = savedSizes.find(size => size.label.toLowerCase() === label.toLowerCase());
+      if (existing) { existing.width = entry.width; existing.height = entry.height; }
+      else { savedSizes.unshift(entry); }
+      savedSizes = savedSizes.slice(0, 20);
+      saveSizes();
+      fillPresets();
+      renderInspector();
+      toast(`Saved ${label}`);
+    };
+    save.onclick = commit;
+    name.addEventListener('keydown', event => { if (event.key === 'Enter') { event.preventDefault(); commit(); } });
+    row.append(name, save);
+    wrap.append(caption, row);
+    if (savedSizes.length) {
+      const list = document.createElement('div');
+      list.style.marginTop = '8px';
+      for (const size of savedSizes) {
+        const line = document.createElement('div');
+        line.className = 'saved-size';
+        const text = document.createElement('span');
+        text.textContent = `${size.label} — ${size.width}×${size.height}`;
+        const use = document.createElement('button');
+        use.type = 'button';
+        use.textContent = 'Use';
+        use.onclick = () => applySize(size.width, size.height);
+        const forget = document.createElement('button');
+        forget.type = 'button';
+        forget.className = 'danger';
+        forget.textContent = 'Forget';   // a bare ✕ here is ambiguous next to the image deletes
+        forget.title = 'Forget this size';
+        forget.onclick = () => {
+          savedSizes = savedSizes.filter(entry => entry.label !== size.label);
+          saveSizes();
+          fillPresets();
+          renderInspector();
+        };
+        line.append(text, use, forget);
+        list.append(line);
+      }
+      wrap.append(list);
+    }
+    return wrap;
+  }
+
+  function applySize(width, height) {
+    canvas.width = width;
+    canvas.height = height;
+    $('canvas-width').value = width;
+    $('canvas-height').value = height;
+    markDirty();
+    renderStage();
+    fillPresets();
+  }
+
   function renderInspector() {
     const body = $('inspector-body');
     body.textContent = '';
@@ -665,9 +902,15 @@
     if (!item) {
       body.append(
         field('Canvas name', input('text', canvas.name, value => { canvas.name = value; markDirty(); })),
-        field('Background colour', input('color', canvas.background.color, value => { canvas.background.color = value; markDirty(); renderStage(); })),
-        field('Background image', select([['', 'No image'], ...uploads.map(name => [name, name])], canvas.background.image,
-          value => { canvas.background.image = value; markDirty(); renderStage(); })),
+        colourField('Background colour', canvas.background.color, value => { canvas.background.color = value; markDirty(); renderStage(); }),
+        imagePicker('background', canvas.background.image || '', name => {
+          canvas.background.image = name;
+          markDirty();
+          renderStage();
+          renderInspector();
+          fillImageSelectors();
+        }),
+        savedSizesField(),
       );
       return;
     }
@@ -709,33 +952,13 @@
       body.append(live);
     }
     if (item.type === 'image') {
-      const picker = document.createElement('div');
-      picker.className = 'field';
-      const label = document.createElement('label');
-      label.textContent = 'Image';
-      const file = document.createElement('input');
-      file.type = 'file';
-      file.accept = 'image/png,image/jpeg,image/webp,image/gif';
-      file.addEventListener('change', async () => {
-        if (!file.files.length) return;
-        try {
-          setStatus('Uploading…');
-          const uploaded = await upload(file.files[0]);
-          update('file', uploaded.name);
-          renderInspector();
-          setStatus('Uploaded');
-        } catch (error) { setStatus(error.message, true); }
-      });
-      const choose = select([['', '— none —'], ...uploads.map(name => [name, name])], item.file || '',
-        value => update('file', value));
-      picker.append(label, file, choose);
-      body.append(picker);
+      body.append(imagePicker('element', item.file || '', name => { update('file', name); renderInspector(); }));
       body.append(field('Width (px)', input('number', or(item.width, 240), value => update('width', value), { min: 0, max: 4096 })));
       body.append(field('Height (px, 0 = keep ratio)', input('number', or(item.height, 0), value => update('height', value), { min: 0, max: 4096 })));
     }
     if (item.type !== 'image') {
       body.append(field('Size', slider(or(item.size, 48), 6, 300, 1, value => update('size', value))));
-      body.append(field('Colour', input('color', item.colour || '#f8fafc', value => update('colour', value))));
+      body.append(colourField('Colour', item.colour || '#f8fafc', value => update('colour', value)));
       const fontOptions = fontChoices.map(entry => [entry.key, entry.label]);
       const current = fontKeyFor(item.font);
       if (current && !fontOptions.some(([key]) => key === current)) fontOptions.unshift([current, `${current} (not installed)`]);
@@ -985,28 +1208,48 @@
   }
 
   // ------------------------------------------------------------ header wiring
-  const PRESET_OPTIONS = () => [['', 'Custom'], ...PRESETS.map(([label, width, height]) => [label, `${label} (${width}×${height})`])];
   function fillPresets() {
     const picker = $('preset');
     picker.textContent = '';
-    for (const [value, label] of PRESET_OPTIONS()) {
+    const custom = document.createElement('option');
+    custom.value = '';
+    custom.textContent = 'Custom';
+    picker.append(custom);
+    for (const [label, width, height] of PRESETS) {
       const option = document.createElement('option');
-      option.value = value; option.textContent = value ? label : 'Custom';
+      option.value = label;
+      option.textContent = `${label} (${width}×${height})`;
       picker.append(option);
     }
-    const match = PRESETS.find(([, width, height]) => width === canvas.width && height === canvas.height);
-    picker.value = match ? match[0] : '';
+    if (savedSizes.length) {
+      const group = document.createElement('optgroup');
+      group.label = 'Saved sizes';
+      for (const size of savedSizes) {
+        const option = document.createElement('option');
+        option.value = `saved:${size.label}`;
+        option.textContent = `${size.label} (${size.width}×${size.height})`;
+        group.append(option);
+      }
+      picker.append(group);
+    }
+    const fixed = PRESETS.find(([, width, height]) => width === canvas.width && height === canvas.height);
+    const saved = savedSizes.find(size => size.width === canvas.width && size.height === canvas.height);
+    picker.value = fixed ? fixed[0] : (saved ? `saved:${saved.label}` : '');
   }
   $('preset').addEventListener('change', () => {
-    const found = PRESETS.find(([label]) => label === $('preset').value);
-    if (!found) return;
-    canvas.width = found[1]; canvas.height = found[2];
-    $('canvas-width').value = canvas.width; $('canvas-height').value = canvas.height;
-    markDirty(); renderStage();
+    const value = $('preset').value;
+    if (value.indexOf('saved:') === 0) {
+      const size = savedSizes.find(entry => entry.label === value.slice(6));
+      if (size) applySize(size.width, size.height);
+      return;
+    }
+    const found = PRESETS.find(([label]) => label === value);
+    if (found) applySize(found[1], found[2]);
   });
   $('canvas-width').addEventListener('input', event => { canvas.width = Math.max(64, Number(event.target.value) || 64); markDirty(); renderStage(); fillPresets(); });
   $('canvas-height').addEventListener('input', event => { canvas.height = Math.max(64, Number(event.target.value) || 64); markDirty(); renderStage(); fillPresets(); });
   $('bg-color').addEventListener('input', event => { canvas.background.color = event.target.value; markDirty(); renderStage(); });
+  $('bg-color').addEventListener('change', () => { rememberColour(canvas.background.color); renderInspector(); });
   $('bg-image').addEventListener('change', event => { canvas.background.image = event.target.value; markDirty(); renderStage(); });
   $('bg-fit').addEventListener('change', event => { canvas.background.fit = event.target.value; markDirty(); renderStage(); });
 
@@ -1108,6 +1351,7 @@
     }
   }
 
+  loadEditorPrefs();
   fillPresets();
   loadFonts().then(loadUploads).then(load).catch(error => setStatus(error.message, true));
   setInterval(refreshValues, 3000);

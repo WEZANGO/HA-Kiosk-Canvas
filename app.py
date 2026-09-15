@@ -701,6 +701,41 @@ def rotate_layer(layer: Image.Image, degrees: float) -> Image.Image:
     return layer.rotate(-degrees, resample=RESAMPLE, expand=True)  # negative: clockwise on screen
 
 
+THUMB_CACHE: dict[tuple, bytes] = {}
+
+
+def upload_thumbnail(path: Path, width: int | None, height: int | None) -> bytes | None:
+    """Downscaled PNG preview for the editor's image grid. Never upscales, so a
+    small icon is returned as-is; the grid asks for ~120px instead of pulling
+    multi-megabyte uploads."""
+    try:
+        stat = path.stat()
+    except OSError:
+        return None
+    key = (str(path), width, height, stat.st_mtime_ns)
+    cached = THUMB_CACHE.get(key)
+    if cached:
+        return cached
+    try:
+        with Image.open(path) as source:
+            source.load()
+            image = source.convert("RGBA")
+    except Exception:
+        return None
+    target_width = width or round(image.width * (height / image.height))
+    target_height = height or round(image.height * (width / image.width))
+    if image.width > target_width or image.height > target_height:
+        ratio = min(target_width / image.width, target_height / image.height)
+        image = image.resize((max(1, int(image.width * ratio)), max(1, int(image.height * ratio))), RESAMPLE)
+    buffer = io.BytesIO()
+    image.save(buffer, format="PNG", optimize=True)
+    data = buffer.getvalue()
+    if len(THUMB_CACHE) > 300:
+        THUMB_CACHE.clear()
+    THUMB_CACHE[key] = data
+    return data
+
+
 def background_image(canvas: dict) -> Image.Image | None:
     name = (canvas.get("background") or {}).get("image", "")
     if not name:
@@ -1057,6 +1092,20 @@ class Handler(BaseHTTPRequestHandler):
         path = upload_path(name)
         if not path or not path.exists():
             return self.send_json({"error": "No such image."}, 404)
+        query = self.query()
+        width = int(clamp(number(query.get("w", [0])[0], 0), 0, 2048)) or None
+        height = int(clamp(number(query.get("h", [0])[0], 0), 0, 2048)) or None
+        if (width or height) and HAVE_PIL:
+            thumb = upload_thumbnail(path, width, height)
+            if thumb:
+                self.send_response(200)
+                self.send_header("Content-Type", "image/png")
+                # An upload's name is unique, so its thumbnail never changes.
+                self.send_header("Cache-Control", "public, max-age=86400")
+                self.send_header("Content-Length", str(len(thumb)))
+                self.end_headers()
+                self.wfile.write(thumb)
+                return
         content_type = {"png": "image/png", "jpg": "image/jpeg", "jpeg": "image/jpeg",
                         "webp": "image/webp", "gif": "image/gif"}.get(path.suffix.lstrip(".").lower(),
                                                                      "application/octet-stream")

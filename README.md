@@ -35,7 +35,11 @@ accept an image URL — not a Lovelace dashboard. This add-on gives you those UR
   family = adding an `apk` package (installed best-effort, so a family Alpine has
   retired can never break the build).
 - **Uploaded PNG/JPG icons and images** (with transparency), usable as elements
-  or as the canvas background (cover / contain / stretch).
+  or as the canvas background (cover / contain / stretch). Uploads are shown as a
+  grid of thumbnails, so an image can be reused with one tap and deleted (with a
+  guard while a canvas still uses it).
+- **Recent colours** under every colour picker, and **named canvas sizes** you can
+  save and reuse for new canvases.
 - **PNG or JPG output**, at the canvas size or scaled with `?w=` / `?h=`.
 - **Real preview**: the editor shows the exact server-rendered image, so what
   you see is what the display gets.

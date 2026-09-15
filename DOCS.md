@@ -112,8 +112,19 @@ always works too.
 - **Real preview** renders the canvas on the server and shows that exact image,
   so wrapping, fonts and live values are what the display will show. The HTML
   view while editing is an approximation (browser fonts differ slightly).
-- Canvas sizes: presets for common screens (1920×1080, 1080×1920, 1024×600, …)
-  or any custom size from 64 to 4096 in each direction.
+- **Images**: uploading puts the picture in a grid of thumbnails, so an image
+  already on the add-on can be picked again with one tap instead of re-uploading
+  it. Each thumbnail has a ✕ that asks twice before deleting; a delete is refused
+  while any canvas — including the one you are editing — still uses that image,
+  and the reason is shown. The cell without a thumbnail clears the image.
+- **Recent colours** sit under every colour picker: tap one to reuse it. They are
+  remembered in the browser you are using.
+- **Canvas sizes**: presets for common screens (1920×1080, 1080×1920, 1024×600, …)
+  or any custom size from 64 to 4096 in each direction. Give the current size a
+  name and **Save** it; saved sizes appear under *Saved sizes* in the size list on
+  every new canvas, and can be re-applied or forgotten in the canvas panel. Like
+  the recent colours, they are remembered in this browser (they are editor
+  preferences, not part of a canvas, so they are not in Home Assistant backups).
 
 ### Element reference
 
@@ -189,6 +200,7 @@ Useful for automations that create or change canvases, and for debugging.
 | GET | `/api/entities?q=&limit=` | Entity picker data: id, name, state, unit. |
 | GET | `/api/entity/<entity_id>?attribute=&decimals=&show_unit=` | One entity's current formatted value. |
 | POST | `/api/uploads?name=<file>` | Upload an image (body = bytes; `Content-Type: image/png` etc.). |
+| GET | `/uploads/<file>?w=120` | The image, or a thumbnail when `w`/`h` is given (what the editor's grid loads). |
 | GET | `/api/uploads` | List uploaded images. |
 | DELETE | `/api/uploads/<file>` | Delete an image (refused while a canvas uses it). |
 | GET | `/health` | Liveness. |
