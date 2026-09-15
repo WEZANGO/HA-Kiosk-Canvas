@@ -70,9 +70,41 @@ FONT_DIRS = (
     "/System/Library/Fonts/Supplemental", "/Library/Fonts", "/System/Library/Fonts",
 )
 FONT_SUFFIXES = (".ttf", ".otf")
-FONT_PREFERENCE = ("dejavu-sans", "dejavu-serif", "dejavu-sans-mono",
-                   "liberation-sans", "liberation-serif", "liberation-mono",
-                   "noto-sans", "roboto", "ubuntu")
+# Picker order: the sans faces people reach for first, then serif, then mono.
+FONT_PREFERENCE = ("dejavu-sans", "liberation-sans", "noto-sans", "roboto", "dejavu-serif",
+                   "liberation-serif", "dejavu-sans-mono", "liberation-mono",
+                   "inconsolata", "jetbrains-mono")
+# A filename cannot tell "DejaVu Sans" from "Deja Vu Sans" — and these keys are
+# what FONT_ALIASES points at and what canvases store, so the families the
+# image ships get their canonical name and key here. Anything else falls back to
+# a slug derived from the filename, which only has to be stable.
+FONT_CANONICAL = {
+    "dejavusansmono": ("dejavu-sans-mono", "DejaVu Sans Mono"),
+    "dejavusanscondensed": ("dejavu-sans-condensed", "DejaVu Sans Condensed"),
+    "dejavusans": ("dejavu-sans", "DejaVu Sans"),
+    "dejavuserif": ("dejavu-serif", "DejaVu Serif"),
+    "liberationsans": ("liberation-sans", "Liberation Sans"),
+    "liberationserif": ("liberation-serif", "Liberation Serif"),
+    "liberationmono": ("liberation-mono", "Liberation Mono"),
+    "notosansmono": ("noto-sans-mono", "Noto Sans Mono"),
+    "notoserif": ("noto-serif", "Noto Serif"),
+    "notosans": ("noto-sans", "Noto Sans"),
+    "robotomono": ("roboto-mono", "Roboto Mono"),
+    "robotocondensed": ("roboto-condensed", "Roboto Condensed"),
+    "roboto": ("roboto", "Roboto"),
+    "inconsolata": ("inconsolata", "Inconsolata"),
+    "jetbrainsmono": ("jetbrains-mono", "JetBrains Mono"),
+    "ubuntumono": ("ubuntu-mono", "Ubuntu Mono"),
+    "ubuntu": ("ubuntu", "Ubuntu"),
+    "arialnarrow": ("arial-narrow", "Arial Narrow"),
+    "arial": ("arial", "Arial"),
+    "timesnewroman": ("times-new-roman", "Times New Roman"),
+    "couriernew": ("courier-new", "Courier New"),
+    "georgia": ("georgia", "Georgia"),
+    "verdana": ("verdana", "Verdana"),
+    "tahoma": ("tahoma", "Tahoma"),
+    "helveticaneue": ("helvetica-neue", "Helvetica Neue"),
+}
 # Canvas documents written before the font list existed used these names.
 FONT_ALIASES = {"system": "dejavu-sans", "sans": "dejavu-sans", "sans-serif": "dejavu-sans",
                 "serif": "dejavu-serif", "mono": "dejavu-sans-mono", "monospace": "dejavu-sans-mono"}
@@ -85,8 +117,23 @@ FONT_REGISTRY_LOCK = threading.Lock()
 
 
 def font_label(family: str) -> str:
-    """DejaVuSans -> 'DejaVu Sans' for the picker."""
-    return re.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", family).strip()
+    """DejaVuSans -> 'DejaVu Sans', NotoSans[wdth,wght] -> 'Noto Sans'."""
+    spaced = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", str(family))
+    spaced = re.sub(r"[\[\](){}]", " ", spaced)
+    # Variable-font axis lists are packaging detail, not part of the name.
+    spaced = re.sub(r"\b(wdth|wght|ital|opsz|slnt|grad|xtra|full)\b", " ", spaced, flags=re.IGNORECASE)
+    return re.sub(r"\s+", " ", spaced.replace(",", " ")).strip()
+
+
+def font_identity(family: str) -> tuple[str, str]:
+    """(key, label) for a family token, using the canonical name where known so
+    that DejaVuSans-Bold.ttf keys as 'dejavu-sans' — the key FONT_ALIASES and
+    FONT_PREFERENCE are written against."""
+    token = re.sub(r"[^a-z0-9]+", "", str(family).lower())
+    if token in FONT_CANONICAL:
+        return FONT_CANONICAL[token]
+    label = font_label(family)
+    return re.sub(r"[^a-z0-9]+", "-", label.lower()).strip("-"), label or str(family)
 
 
 def font_category(label: str) -> str:
@@ -111,18 +158,18 @@ def discover_fonts() -> dict[str, dict]:
             for path in sorted(root.rglob("*")):
                 if not path.is_file() or path.suffix.lower() not in FONT_SUFFIXES:
                     continue  # .ttc collections are skipped: indexing them is guesswork
-                stem = path.stem.replace(" ", "-")
+                stem = path.stem
                 lowered = stem.lower()
                 bold = "bold" in lowered
                 italic = "italic" in lowered or "oblique" in lowered
-                family = stem
+                family = stem.replace(" ", "-")
                 for word in FONT_STYLE_WORDS:
                     family = re.sub(word, "", family, flags=re.IGNORECASE)
                 family = re.sub(r"-{2,}", "-", family).strip("-") or stem
-                key = re.sub(r"[^a-z0-9]+", "-", family.lower()).strip("-")
+                key, label = font_identity(family)
                 if not key:
                     continue
-                entry = found.setdefault(key, {"label": font_label(family), "files": {}})
+                entry = found.setdefault(key, {"label": label, "files": {}})
                 entry["files"].setdefault((bold, italic), str(path))
         FONT_REGISTRY.update(found)
         return FONT_REGISTRY
@@ -496,6 +543,20 @@ def load_font(name: str, size: int, bold: bool, italic: bool):
             font = ImageFont.load_default(size=key[1])
         except TypeError:  # Pillow < 10.1 has no size argument
             font = ImageFont.load_default()
+    elif bold or italic:
+        # Some packages ship one variable font for every weight/slant (Alpine's
+        # Noto is like this). Ask the file for the named instance we want; static
+        # fonts and Pillow builds without that API simply stay as they are.
+        wanted = "Bold Italic" if (bold and italic) else ("Bold" if bold else "Italic")
+        try:
+            names = [name.decode() if isinstance(name, bytes) else str(name)
+                     for name in font.get_variation_names()]
+            for candidate in (wanted, "Bold", "Italic"):
+                if candidate in names:
+                    font.set_variation_by_name(candidate)
+                    break
+        except Exception:
+            pass  # not a variable font, or no variation support: nothing to do
     FONT_CACHE[key] = font
     return font
 

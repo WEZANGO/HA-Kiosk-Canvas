@@ -140,21 +140,32 @@ screen never shows the word "unavailable" in the middle of a message.
 
 ## Fonts
 
-The add-on image installs five families, and the editor's font list is built from
-whatever is actually installed:
+The add-on image installs these families, and the editor's font list is built
+from whatever is actually installed:
 
 | Installed | Notes |
 | --- | --- |
 | DejaVu Sans / Serif / Sans Mono | Default; `system`, `serif` and `mono` on older canvases mean these. |
 | Liberation Sans / Serif / Mono | Metric-compatible with Arial, Times New Roman and Courier New. |
-| Noto Sans | Neutral, very legible at small sizes. |
+| Noto Sans | Neutral and very legible at small sizes. |
 | Roboto | Modern Android-style sans. |
-| Ubuntu | Distinctive humanist sans. |
+| Inconsolata | Narrow monospace, good for numbers and codes. |
+| JetBrains Mono | Wider monospace with tall x-height. |
 
-Each family is offered in regular, bold, italic and bold-italic where the package
-provides them. **Adding a family is a one-line change to the Dockerfile** — put
-`font-<name>` in the `apk add` list and rebuild; it appears in the picker, and the
-renderer picks it up from the font directories automatically.
+Each family is offered in regular, bold, italic and bold-italic wherever the
+package provides them (a single variable-font file covering several weights is
+handled too).
+
+Installation is **best-effort on purpose**: Alpine retires and renames font
+families between releases — `font-ubuntu`, which this add-on used to install, no
+longer exists in the Alpine version the base image is built on — so each font is
+installed with its own `apk` call and a failure is reported in the build log
+(`kiosk-canvas: <package> is not available in this Alpine release, skipping it`)
+instead of breaking the build. The picker simply lists what the image has.
+
+**Adding a family is a one-line change to the Dockerfile**: add `font-<name>` to
+the list in that `RUN` line and rebuild. It appears in the picker automatically —
+no code change, because font directories are scanned at runtime.
 
 The editor is served these very files over `/fonts/<key>`, so its canvas uses the
 same typeface and metrics as the rendered image: text position and line wrapping
@@ -204,6 +215,16 @@ Limits: canvases 64-4096 px per side, images up to 8 MB, at most ~16 megapixels
 of output, 2000 characters of text, decimals −1 to 6.
 
 ## Troubleshooting
+
+- **The editor loads but nothing responds to clicks.** The page's script did not
+  run — the editor is written for browsers from around 2018 onwards, so an old
+  tablet/WebView (a kiosk device, for instance) can fail to parse it. The editor
+  now says so itself: a red banner appears at the top naming the error and the
+  line, and `window.__kioskEditorReady` / `window.__kioskHasPointer` report the
+  state (which input path it chose). If you see that banner, update the device's
+  browser or use another one. Please report the banner text if it appears on a
+  browser you consider modern.
+
 
 - **Entity values show as dashes** — the add-on could not read states. Check the
   add-on log: it prints the reason (`homeassistant_api` missing, Home Assistant

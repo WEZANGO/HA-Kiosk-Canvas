@@ -63,6 +63,9 @@
   .url-box { background: #0b1222; border: 1px solid #334155; border-radius: 7px; padding: 8px; font-family: ui-monospace, monospace; font-size: .72rem; word-break: break-all; color: #7dd3fc; }
   .url-line { display: flex; gap: 6px; align-items: center; margin-bottom: 8px; }
   .url-line .url-box { flex: 1; }
+  #boot-warning { position: fixed; top: 0; left: 0; right: 0; z-index: 60; padding: 12px 16px; background: #7f1d1d; border-bottom: 1px solid #ef4444; color: #fef2f2; font-size: .9rem; line-height: 1.5; }
+  #boot-warning[hidden] { display: none; }
+  #boot-warning code { background: rgba(0,0,0,.35); padding: 1px 5px; border-radius: 4px; }
   #toast { position: fixed; left: 50%; bottom: 22px; transform: translateX(-50%); background: #14532d; border: 1px solid #22c55e; color: #f0fdf4; padding: 9px 16px; border-radius: 8px; opacity: 0; transition: opacity .2s; pointer-events: none; }
   #toast.show { opacity: 1; }
   #toast.error { background: #7f1d1d; border-color: #ef4444; }
@@ -135,8 +138,48 @@
   </main>
 </div>
 <div id="toast"></div>
+<div id="boot-warning" hidden>
+  <strong>The editor did not start.</strong> <span id="boot-detail"></span>
+</div>
+<script>
+// Deliberately ES5, and deliberately before the editor script: if that script
+// cannot even be parsed by this browser (an old WebView, say) nothing else would
+// report it — the page would just look like dead buttons.
+(function () {
+  window.__kioskEditorReady = false;
+  window.__kioskBootError = '';
+  function escapeHtml(text) {
+    return String(text).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  }
+  function show() {
+    var banner = document.getElementById('boot-warning');
+    if (!banner || !banner.hidden) { return; }
+    var detail = document.getElementById('boot-detail');
+    if (detail) {
+      detail.innerHTML = window.__kioskEditorReady
+        ? 'An error interrupted it: <code>' + escapeHtml(window.__kioskBootError) + '</code>'
+        : 'This browser did not run the editor script, so nothing here responds. That normally means the '
+          + 'browser is too old (a browser from 2018 or newer is needed) or the page was blocked. Error: <code>'
+          + escapeHtml(window.__kioskBootError || 'the script never finished loading') + '</code>';
+    }
+    banner.hidden = false;
+  }
+  window.addEventListener('error', function (event) {
+    var detail = (event && (event.message || event.error)) || 'unknown error';
+    window.__kioskBootError = String(detail) + (event && event.lineno ? ' (line ' + event.lineno + ')' : '');
+    show();
+  });
+  window.addEventListener('unhandledrejection', function (event) {
+    var reason = event && event.reason;
+    window.__kioskBootError = String((reason && reason.message) || reason || 'unhandled rejection');
+    show();
+  });
+  window.setTimeout(function () { if (!window.__kioskEditorReady) { show(); } }, 3000);
+})();
+</script>
 <script>
 (() => {
+  window.__kioskEditorReady = true;   // see the ES5 watchdog above: unset means "script never ran"
   const ACCESS_TOKEN = '__ACCESS_TOKEN__';
   const DIRECT_PORT = '8097';
   const BASE = location.pathname.replace(/\/+$/, '') + '/';
@@ -151,6 +194,18 @@
   const directUrl = (path, query = '') =>
     `${location.protocol}//${location.hostname}:${DIRECT_PORT}${path}?auth=${encodeURIComponent(ACCESS_TOKEN)}${query}`;
   const $ = id => document.getElementById(id);
+  // Nullish coalescing is ES2020: on a browser that cannot parse it the WHOLE
+  // script fails to run, which looks exactly like dead buttons. This editor
+  // therefore keeps to ES2017, so kiosk devices with older WebViews still work.
+  const or = (value, fallback) => (value === undefined || value === null ? fallback : value);
+  // matchAll is ES2020 as well: same reasoning.
+  function tokenMatches(text) {
+    const found = [];
+    const pattern = new RegExp(tokenPattern.source, 'g');
+    let match;
+    while ((match = pattern.exec(text)) !== null) found.push(match);
+    return found;
+  }
   const stage = $('stage'), stageWrap = $('stage-wrap'), stageBg = $('stage-bg');
 
   const PRESETS = [
@@ -214,7 +269,7 @@
       return String(item.text || '').replace(tokenPattern, (whole, entity, attribute) =>
         valueOf(valueKey(entity, attribute || '', -1, false)));
     }
-    const key = valueKey(item.entity || '', item.attribute || '', item.decimals ?? -1, item.show_unit !== false);
+    const key = valueKey(item.entity || '', item.attribute || '', or(item.decimals, -1), item.show_unit !== false);
     return `${item.prefix || ''}${item.entity ? valueOf(key) : '—'}${item.suffix || ''}`;
   }
 
@@ -222,11 +277,11 @@
     const wanted = new Map();
     for (const item of canvas.elements) {
       if (item.type === 'entity' && item.entity) {
-        const key = valueKey(item.entity, item.attribute || '', item.decimals ?? -1, item.show_unit !== false);
+        const key = valueKey(item.entity, item.attribute || '', or(item.decimals, -1), item.show_unit !== false);
         wanted.set(key, `api/entity/${encodeURIComponent(item.entity)}?attribute=${encodeURIComponent(item.attribute || '')}` +
-          `&decimals=${item.decimals ?? -1}&show_unit=${item.show_unit !== false}`);
+          `&decimals=${or(item.decimals, -1)}&show_unit=${item.show_unit !== false}`);
       } else if (item.type === 'text') {
-        for (const match of String(item.text || '').matchAll(tokenPattern)) {
+        for (const match of tokenMatches(String(item.text || ''))) {
           const key = valueKey(match[1], match[2] || '', -1, false);
           wanted.set(key, `api/entity/${encodeURIComponent(match[1])}?attribute=${encodeURIComponent(match[2] || '')}` +
             `&decimals=-1&show_unit=false`);
@@ -288,7 +343,7 @@
     node.dataset.id = item.id;
     node.style.left = `${Number(item.x) || 0}px`;
     node.style.top = `${Number(item.y) || 0}px`;
-    node.style.opacity = (item.opacity ?? 100) / 100;
+    node.style.opacity = (or(item.opacity, 100)) / 100;
     node.style.transform = `rotate(${Number(item.rotation) || 0}deg)`;
     if (item.visible === false) node.style.display = 'none';
     if (item.type === 'image') {
@@ -377,32 +432,46 @@
   }
 
   // ------------------------------------------------------------ interaction
+  // Dragging works with Pointer Events where they exist, and with mouse/touch
+  // events where they do not (older WebViews, iOS Safari before 13), so a kiosk
+  // device can still lay a canvas out even if its browser is behind.
+  const HAS_POINTER = typeof window.PointerEvent === 'function';
+  window.__kioskHasPointer = HAS_POINTER;   // diagnostics: which input path is in use
+  const pointOf = event => (event.touches && event.touches.length ? event.touches[0] : event);
   let drag = null;
-  stage.addEventListener('pointerdown', event => {
-    const node = event.target.closest('.el');
+
+  function startDrag(event) {
+    const point = pointOf(event);
+    const node = event.target.closest ? event.target.closest('.el') : null;
     if (!node) { selectedId = null; syncSelection(); renderInspector(); return; }
     const item = canvas.elements.find(entry => entry.id === node.dataset.id);
     if (!item) return;
     selectedId = item.id;
     syncSelection();
     renderInspector();
-    const resizing = !!event.target.closest('[data-handle]');
     drag = {
-      id: item.id, resizing, startX: event.clientX, startY: event.clientY,
+      id: item.id, resizing: !!event.target.closest('[data-handle]'),
+      startX: point.clientX, startY: point.clientY,
       originX: Number(item.x) || 0, originY: Number(item.y) || 0,
-      size: Number(item.size) || 48, width: Number(item.width) || 240, height: Number(item.height) || 0, moved: false
+      size: Number(item.size) || 48, width: Number(item.width) || 240,
+      height: Number(item.height) || 0, moved: false
     };
     // Capture keeps the drag alive when the pointer leaves the element. Not all
     // environments allow it (synthetic events, older browsers) — never let that
     // abort the drag itself.
-    try { event.target.setPointerCapture(event.pointerId); } catch (error) { /* drag still works */ }
-    event.preventDefault();
-  });
-  stage.addEventListener('pointermove', event => {
+    if (HAS_POINTER && event.target.setPointerCapture) {
+      try { event.target.setPointerCapture(event.pointerId); } catch (error) { /* drag still works */ }
+    }
+    if (event.cancelable) event.preventDefault();
+  }
+
+  function moveDrag(event) {
     if (!drag) return;
     const item = canvas.elements.find(entry => entry.id === drag.id);
     if (!item) return;
-    const dx = (event.clientX - drag.startX) / fit, dy = (event.clientY - drag.startY) / fit;
+    const point = pointOf(event);
+    if (event.cancelable && !HAS_POINTER) event.preventDefault();   // stop the page scrolling under a touch drag
+    const dx = (point.clientX - drag.startX) / fit, dy = (point.clientY - drag.startY) / fit;
     if (Math.abs(dx) > 1 || Math.abs(dy) > 1) drag.moved = true;
     if (drag.resizing) {
       // Scaling is deliberately independent of the element's current size:
@@ -431,19 +500,34 @@
       if (node) { node.style.left = `${item.x}px`; node.style.top = `${item.y}px`; }
     }
     markDirty();
-  });
-  const endDrag = () => {
+  }
+
+  function endDrag() {
     if (!drag) return;
     const moved = drag.moved;
     drag = null;
     if (moved) { renderInspector(); schedulePreview(); }
-  };
-  stage.addEventListener('pointerup', endDrag);
-  stage.addEventListener('pointercancel', endDrag);
-  // Also finish on a window-level release: if pointer capture was not available
-  // and the pointer is released outside the canvas, the drag must not stick.
-  window.addEventListener('pointerup', endDrag);
-  window.addEventListener('pointercancel', endDrag);
+  }
+
+  if (HAS_POINTER) {
+    stage.addEventListener('pointerdown', startDrag);
+    stage.addEventListener('pointermove', moveDrag);
+    stage.addEventListener('pointerup', endDrag);
+    stage.addEventListener('pointercancel', endDrag);
+    // Also finish on a window-level release: if pointer capture was not available
+    // and the pointer is released outside the canvas, the drag must not stick.
+    window.addEventListener('pointerup', endDrag);
+    window.addEventListener('pointercancel', endDrag);
+  } else {
+    stage.addEventListener('mousedown', startDrag);
+    stage.addEventListener('mousemove', moveDrag);
+    stage.addEventListener('mouseup', endDrag);
+    window.addEventListener('mouseup', endDrag);
+    stage.addEventListener('touchstart', startDrag, { passive: false });
+    stage.addEventListener('touchmove', moveDrag, { passive: false });
+    stage.addEventListener('touchend', endDrag);
+    window.addEventListener('touchend', endDrag);
+  }
 
   document.addEventListener('keydown', event => {
     if (['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement.tagName)) return;
@@ -614,10 +698,10 @@
       row.append(prefix, suffix);
       body.append(row);
       body.append(check('Append unit (°C, %, …)', item.show_unit !== false, value => update('show_unit', value)));
-      body.append(field('Decimals (−1 = as reported)', input('number', item.decimals ?? -1, value => update('decimals', Math.max(-1, Math.min(6, value))), { min: -1, max: 6, step: 1 })));
+      body.append(field('Decimals (−1 = as reported)', input('number', or(item.decimals, -1), value => update('decimals', Math.max(-1, Math.min(6, value))), { min: -1, max: 6, step: 1 })));
       const live = document.createElement('p');
       live.className = 'hint';
-      const key = valueKey(item.entity || '', item.attribute || '', item.decimals ?? -1, item.show_unit !== false);
+      const key = valueKey(item.entity || '', item.attribute || '', or(item.decimals, -1), item.show_unit !== false);
       const entry = valueCache[key];
       live.textContent = entry
         ? (entry.error ? `Home Assistant said: ${entry.error}` : `Now: ${entry.value}  (${entry.name}, state ${entry.state})`)
@@ -646,11 +730,11 @@
         value => update('file', value));
       picker.append(label, file, choose);
       body.append(picker);
-      body.append(field('Width (px)', input('number', item.width ?? 240, value => update('width', value), { min: 0, max: 4096 })));
-      body.append(field('Height (px, 0 = keep ratio)', input('number', item.height ?? 0, value => update('height', value), { min: 0, max: 4096 })));
+      body.append(field('Width (px)', input('number', or(item.width, 240), value => update('width', value), { min: 0, max: 4096 })));
+      body.append(field('Height (px, 0 = keep ratio)', input('number', or(item.height, 0), value => update('height', value), { min: 0, max: 4096 })));
     }
     if (item.type !== 'image') {
-      body.append(field('Size', slider(item.size ?? 48, 6, 300, 1, value => update('size', value))));
+      body.append(field('Size', slider(or(item.size, 48), 6, 300, 1, value => update('size', value))));
       body.append(field('Colour', input('color', item.colour || '#f8fafc', value => update('colour', value))));
       const fontOptions = fontChoices.map(entry => [entry.key, entry.label]);
       const current = fontKeyFor(item.font);
@@ -661,27 +745,27 @@
       body.append(check('Bold', item.bold !== false, value => update('bold', value)));
       body.append(check('Italic', item.italic === true, value => update('italic', value)));
       body.append(check('Drop shadow', item.shadow !== false, value => update('shadow', value)));
-      body.append(field('Line height', input('number', item.line_height ?? 1.15, value => update('line_height', value), { min: 0.6, max: 3, step: 0.05 })));
-      body.append(field('Wrap at width (0 = off)', input('number', item.wrap ?? 0, value => update('wrap', value), { min: 0, max: 4096 })));
+      body.append(field('Line height', input('number', or(item.line_height, 1.15), value => update('line_height', value), { min: 0.6, max: 3, step: 0.05 })));
+      body.append(field('Wrap at width (0 = off)', input('number', or(item.wrap, 0), value => update('wrap', value), { min: 0, max: 4096 })));
     }
     const row = document.createElement('div');
     row.className = 'field row';
     const left = document.createElement('div');
     left.append(Object.assign(document.createElement('label'), { textContent: 'X' }),
-      input('number', item.x ?? 0, value => update('x', value), { min: -4096, max: 4096 }));
+      input('number', or(item.x, 0), value => update('x', value), { min: -4096, max: 4096 }));
     const top = document.createElement('div');
     top.append(Object.assign(document.createElement('label'), { textContent: 'Y' }),
-      input('number', item.y ?? 0, value => update('y', value), { min: -4096, max: 4096 }));
+      input('number', or(item.y, 0), value => update('y', value), { min: -4096, max: 4096 }));
     row.append(left, top);
     body.append(row);
     const row2 = document.createElement('div');
     row2.className = 'field row';
     const rot = document.createElement('div');
     rot.append(Object.assign(document.createElement('label'), { textContent: 'Rotation°' }),
-      input('number', item.rotation ?? 0, value => update('rotation', value), { min: -360, max: 360, step: 5 }));
+      input('number', or(item.rotation, 0), value => update('rotation', value), { min: -360, max: 360, step: 5 }));
     const op = document.createElement('div');
     op.append(Object.assign(document.createElement('label'), { textContent: 'Opacity %' }),
-      input('number', item.opacity ?? 100, value => update('opacity', value), { min: 0, max: 100, step: 5 }));
+      input('number', or(item.opacity, 100), value => update('opacity', value), { min: 0, max: 100, step: 5 }));
     row2.append(rot, op);
     body.append(row2);
     const actions = document.createElement('div');
