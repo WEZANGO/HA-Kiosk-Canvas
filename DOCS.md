@@ -138,6 +138,31 @@ Battery: {{sensor.phone.battery_level}}%
 An entity that is missing, `unknown` or `unavailable` renders as `—`, so a media
 screen never shows the word "unavailable" in the middle of a message.
 
+## Fonts
+
+The add-on image installs five families, and the editor's font list is built from
+whatever is actually installed:
+
+| Installed | Notes |
+| --- | --- |
+| DejaVu Sans / Serif / Sans Mono | Default; `system`, `serif` and `mono` on older canvases mean these. |
+| Liberation Sans / Serif / Mono | Metric-compatible with Arial, Times New Roman and Courier New. |
+| Noto Sans | Neutral, very legible at small sizes. |
+| Roboto | Modern Android-style sans. |
+| Ubuntu | Distinctive humanist sans. |
+
+Each family is offered in regular, bold, italic and bold-italic where the package
+provides them. **Adding a family is a one-line change to the Dockerfile** — put
+`font-<name>` in the `apk add` list and rebuild; it appears in the picker, and the
+renderer picks it up from the font directories automatically.
+
+The editor is served these very files over `/fonts/<key>`, so its canvas uses the
+same typeface and metrics as the rendered image: text position and line wrapping
+agree to within about a pixel (verified by diffing a screenshot of the editor
+canvas against the rendered PNG). This matters more than it sounds — the font
+you choose changes wrapping, so a long line may fit in a narrow sans face and wrap
+in a wide monospace one, and both the editor and the image wrap it identically.
+
 ## HTTP API
 
 Useful for automations that create or change canvases, and for debugging.

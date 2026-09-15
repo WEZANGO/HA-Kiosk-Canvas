@@ -44,7 +44,7 @@
       repeating-conic-gradient(#0d1526 0% 25%, #101b2e 0% 50%) 50% / 24px 24px; }
   #stage { position: relative; background: #0f172a; box-shadow: 0 18px 50px rgba(0,0,0,.55); transform-origin: center; }
   #stage img.bg { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
-  .el { position: absolute; transform-origin: top left; user-select: none; white-space: pre-wrap; cursor: move; }
+  .el { position: absolute; transform-origin: center center; user-select: none; white-space: pre-wrap; cursor: move; }
   .el.text, .el.entity { text-shadow: 0 1px 3px rgba(0,0,0,.85); line-height: 1.15; }
   .el img { display: block; width: 100%; height: 100%; pointer-events: none; }
   .el .txt { display: block; }
@@ -158,8 +158,13 @@
     ['1080x1080', 1080, 1080], ['1024x600', 1024, 600], ['800x480', 800, 480],
     ['1920x1200', 1920, 1200], ['3840x2160', 3840, 2160]
   ];
-  const FONTS = [['system', 'Sans'], ['serif', 'Serif'], ['mono', 'Monospace']];
-  const FONT_CSS = { system: 'system-ui, -apple-system, "Segoe UI", sans-serif', serif: 'Georgia, serif', mono: 'ui-monospace, Menlo, monospace' };
+  // Filled from /api/fonts: the add-on serves the same font files it renders
+  // with, so the editor previews with identical metrics.
+  let fontChoices = [{ key: 'dejavu-sans', label: 'DejaVu Sans', category: 'sans-serif' }];
+  let fontAliases = {};
+  let fontCss = { 'dejavu-sans': "system-ui, sans-serif" };
+  let defaultFont = 'dejavu-sans';
+  const fontKeyFor = value => fontAliases[value] || value || defaultFont;
 
   function blankCanvas() {
     return { id: '', name: 'New canvas', width: 1280, height: 720,
@@ -255,8 +260,9 @@
   }
 
   // --------------------------------------------------------------- drawing
+  const fontStack = item => fontCss[fontKeyFor(item.font)] || fontCss[defaultFont] || 'sans-serif';
   const fontString = item => `${item.italic ? 'italic ' : ''}${item.bold === false ? '400' : '700'} ` +
-    `${Math.max(6, Number(item.size) || 48)}px ${FONT_CSS[item.font] || FONT_CSS.system}`;
+    `${Math.max(6, Number(item.size) || 48)}px ${fontStack(item)}`;
 
   function wrapText(text, item) {
     const limit = Number(item.wrap) || 0;
@@ -335,6 +341,28 @@
     for (const item of canvas.elements) stage.append(elementNodeFor(item));
     fitStage();
     syncSelection();
+    preloadUsedFonts();
+  }
+
+  const loadedFonts = new Set();
+  function preloadUsedFonts() {
+    const wanted = new Set();
+    for (const item of canvas.elements) {
+      if (item.type === 'image') continue;
+      const weight = item.bold === false ? '400' : '700';
+      const slant = item.italic ? 'italic' : 'normal';
+      const size = Math.max(6, Number(item.size) || 48);
+      wanted.add(`${slant} ${weight} ${size}px 'KF-${fontKeyFor(item.font)}'`);
+    }
+    const missing = [...wanted].filter(request => !loadedFonts.has(request));
+    if (!missing.length) return;
+    Promise.all(missing.map(request => document.fonts.load(request)
+      .then(loaded => { if (loaded.length) loadedFonts.add(request); })
+      .catch(() => {}))).then(() => {
+        renderStage();        // lay the text out again, now with the real font
+        updateStageValues();
+        if (previewOn) schedulePreview();
+      });
   }
 
   function fitStage() {
@@ -624,7 +652,10 @@
     if (item.type !== 'image') {
       body.append(field('Size', slider(item.size ?? 48, 6, 300, 1, value => update('size', value))));
       body.append(field('Colour', input('color', item.colour || '#f8fafc', value => update('colour', value))));
-      body.append(field('Font', select(FONTS, item.font || 'system', value => update('font', value))));
+      const fontOptions = fontChoices.map(entry => [entry.key, entry.label]);
+      const current = fontKeyFor(item.font);
+      if (current && !fontOptions.some(([key]) => key === current)) fontOptions.unshift([current, `${current} (not installed)`]);
+      body.append(field('Font', select(fontOptions, current, value => update('font', value))));
       body.append(field('Alignment', select([['left', 'Left'], ['center', 'Centre'], ['right', 'Right']], item.align || 'left',
         value => update('align', value, false) || updateStageValues())));
       body.append(check('Bold', item.bold !== false, value => update('bold', value)));
@@ -900,9 +931,9 @@
       const type = button.dataset.add;
       const base = { id: newId(), type, name: '', x: Math.round(canvas.width * 0.08), y: Math.round(canvas.height * 0.4), rotation: 0, opacity: 100, visible: true };
       let item;
-      if (type === 'text') item = { ...base, text: 'Hello', size: Math.round(canvas.height / 8), colour: '#f8fafc', font: 'system', bold: true, italic: false, align: 'left', shadow: true, line_height: 1.15, wrap: 0 };
+      if (type === 'text') item = { ...base, text: 'Hello', size: Math.round(canvas.height / 8), colour: '#f8fafc', font: defaultFont, bold: true, italic: false, align: 'left', shadow: true, line_height: 1.15, wrap: 0 };
       else if (type === 'image') item = { ...base, file: '', width: Math.round(canvas.width / 5), height: 0 };
-      else item = { ...base, entity: '', attribute: '', prefix: '', suffix: '', decimals: -1, show_unit: true, size: Math.round(canvas.height / 8), colour: '#7dd3fc', font: 'system', bold: true, italic: false, align: 'left', shadow: true, line_height: 1.15, wrap: 0, y: Math.round(canvas.height * 0.55) };
+      else item = { ...base, entity: '', attribute: '', prefix: '', suffix: '', decimals: -1, show_unit: true, size: Math.round(canvas.height / 8), colour: '#7dd3fc', font: defaultFont, bold: true, italic: false, align: 'left', shadow: true, line_height: 1.15, wrap: 0, y: Math.round(canvas.height * 0.55) };
       canvas.elements.push(item);
       selectedId = item.id;
       markDirty(); renderLayers(); renderStage(); renderInspector();
@@ -967,8 +998,34 @@
 
   window.addEventListener('beforeunload', event => { if (dirty) event.preventDefault(); });
 
+  async function loadFonts() {
+    try {
+      const data = await request('api/fonts');
+      if (data.items && data.items.length) {
+        fontChoices = data.items;
+        fontAliases = data.aliases || {};
+        defaultFont = data.default || fontChoices[0].key;
+        fontCss = {};
+        const style = document.createElement('style');
+        for (const entry of fontChoices) {
+          fontCss[entry.key] = `'KF-${entry.key}', ${entry.category || 'sans-serif'}`;
+          for (const [name, weight, slant] of [['regular', 'normal', 'normal'], ['bold', 'bold', 'normal'],
+                                               ['italic', 'normal', 'italic'], ['bolditalic', 'bold', 'italic']]) {
+            style.textContent += `@font-face { font-family: 'KF-${entry.key}'; font-weight: ${weight}; ` +
+              `font-style: ${slant}; font-display: block; ` +
+              `src: url('${api(`fonts/${entry.key}?style=${name}`)}') format('truetype'); }\n`;
+          }
+        }
+        document.head.append(style);
+        await document.fonts.ready.catch(() => {});
+      }
+    } catch (error) {
+      setStatus(`Fonts unavailable: ${error.message}`, true);
+    }
+  }
+
   fillPresets();
-  loadUploads().then(load).catch(error => setStatus(error.message, true));
+  loadFonts().then(loadUploads).then(load).catch(error => setStatus(error.message, true));
   setInterval(refreshValues, 3000);
   setInterval(() => { if (dirty) setStatus('Unsaved changes'); }, 15000);
 })();

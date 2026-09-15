@@ -28,7 +28,7 @@ from urllib.parse import parse_qs, unquote, urlencode, urlparse
 from urllib.request import Request, urlopen
 
 try:
-    from PIL import Image, ImageDraw, ImageFont
+    from PIL import Image, ImageDraw, ImageFilter, ImageFont
     HAVE_PIL = True
 except ImportError:  # pragma: no cover - depends on the runtime image
     HAVE_PIL = False
@@ -41,7 +41,6 @@ SUPERVISOR_API = "http://supervisor/core/api"
 
 CANVAS_MIN, CANVAS_MAX = 64, 4096
 ELEMENT_TYPES = ("text", "image", "entity")
-DISPLAY_FONTS = ("system", "serif", "mono")
 ALIGNMENTS = ("left", "center", "right")
 UPLOAD_TYPES = {"image/png": ".png", "image/jpeg": ".jpg", "image/webp": ".webp", "image/gif": ".gif"}
 UPLOAD_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,120}$")
@@ -57,29 +56,104 @@ DEFAULT_BACKGROUND = {"color": "#0f172a", "image": "", "fit": "cover"}
 DEFAULT_CANVAS = {"name": "New canvas", "width": 1280, "height": 720,
                   "background": dict(DEFAULT_BACKGROUND), "elements": []}
 
-# Text/icon elements and the entity values they contain are drawn with DejaVu
-# (font-dejavu in the image); the built-in Pillow font is the fallback so a
-# missing font degrades instead of failing the render.
-FONT_FILES = {
-    "system": {
-        (False, False): ("/usr/share/fonts/dejavu/DejaVuSans.ttf", "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"),
-        (True, False): ("/usr/share/fonts/dejavu/DejaVuSans-Bold.ttf", "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"),
-        (False, True): ("/usr/share/fonts/dejavu/DejaVuSans-Oblique.ttf", "/usr/share/fonts/truetype/dejavu/DejaVuSans-Oblique.ttf"),
-        (True, True): ("/usr/share/fonts/dejavu/DejaVuSans-BoldOblique.ttf", "/usr/share/fonts/truetype/dejavu/DejaVuSans-BoldOblique.ttf"),
-    },
-    "serif": {
-        (False, False): ("/usr/share/fonts/dejavu/DejaVuSerif.ttf", "/usr/share/fonts/truetype/dejavu/DejaVuSerif.ttf"),
-        (True, False): ("/usr/share/fonts/dejavu/DejaVuSerif-Bold.ttf", "/usr/share/fonts/truetype/dejavu/DejaVuSerif-Bold.ttf"),
-        (False, True): ("/usr/share/fonts/dejavu/DejaVuSerif-Italic.ttf", "/usr/share/fonts/truetype/dejavu/DejaVuSerif-Italic.ttf"),
-        (True, True): ("/usr/share/fonts/dejavu/DejaVuSerif-BoldItalic.ttf", "/usr/share/fonts/truetype/dejavu/DejaVuSerif-BoldItalic.ttf"),
-    },
-    "mono": {
-        (False, False): ("/usr/share/fonts/dejavu/DejaVuSansMono.ttf", "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf"),
-        (True, False): ("/usr/share/fonts/dejavu/DejaVuSansMono-Bold.ttf", "/usr/share/fonts/truetype/dejavu/DejaVuSansMono-Bold.ttf"),
-        (False, True): ("/usr/share/fonts/dejavu/DejaVuSansMono-Oblique.ttf", "/usr/share/fonts/truetype/dejavu/DejaVuSansMono-Oblique.ttf"),
-        (True, True): ("/usr/share/fonts/dejavu/DejaVuSansMono-BoldOblique.ttf", "/usr/share/fonts/truetype/dejavu/DejaVuSansMono-BoldOblique.ttf"),
-    },
-}
+# --------------------------------------------------------------------------- #
+# Fonts
+# --------------------------------------------------------------------------- #
+# Font files are discovered from the system font directories rather than being
+# hard-coded per family: the picker offers whatever the image ships (the
+# Dockerfile installs DejaVu, Liberation, Noto and Roboto), and adding another
+# package needs no code change.
+# The editor is served these exact files over /fonts/<key>, which is what makes
+# the editor preview and the rendered image agree: same typeface, same metrics.
+FONT_DIRS = (
+    "/usr/share/fonts", "/usr/local/share/fonts",
+    "/System/Library/Fonts/Supplemental", "/Library/Fonts", "/System/Library/Fonts",
+)
+FONT_SUFFIXES = (".ttf", ".otf")
+FONT_PREFERENCE = ("dejavu-sans", "dejavu-serif", "dejavu-sans-mono",
+                   "liberation-sans", "liberation-serif", "liberation-mono",
+                   "noto-sans", "roboto", "ubuntu")
+# Canvas documents written before the font list existed used these names.
+FONT_ALIASES = {"system": "dejavu-sans", "sans": "dejavu-sans", "sans-serif": "dejavu-sans",
+                "serif": "dejavu-serif", "mono": "dejavu-sans-mono", "monospace": "dejavu-sans-mono"}
+FONT_STYLE_WORDS = ("bolditalic", "boldoblique", "semibolditalic", "bold", "semibold",
+                    "italic", "oblique", "regular", "book", "medium", "light")
+DEFAULT_FONT = "dejavu-sans"
+FONT_KEY_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,119}$")
+FONT_REGISTRY: dict[str, dict] = {}
+FONT_REGISTRY_LOCK = threading.Lock()
+
+
+def font_label(family: str) -> str:
+    """DejaVuSans -> 'DejaVu Sans' for the picker."""
+    return re.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", family).strip()
+
+
+def font_category(label: str) -> str:
+    lowered = label.lower()
+    if "mono" in lowered or "courier" in lowered:
+        return "monospace"
+    if "serif" in lowered and "sans" not in lowered:
+        return "serif"
+    return "sans-serif"
+
+
+def discover_fonts() -> dict[str, dict]:
+    """Font key -> {'label': str, 'files': {(bold, italic): path}}."""
+    with FONT_REGISTRY_LOCK:
+        if FONT_REGISTRY:
+            return FONT_REGISTRY
+        found: dict[str, dict] = {}
+        for directory in FONT_DIRS:
+            root = Path(directory)
+            if not root.is_dir():
+                continue
+            for path in sorted(root.rglob("*")):
+                if not path.is_file() or path.suffix.lower() not in FONT_SUFFIXES:
+                    continue  # .ttc collections are skipped: indexing them is guesswork
+                stem = path.stem.replace(" ", "-")
+                lowered = stem.lower()
+                bold = "bold" in lowered
+                italic = "italic" in lowered or "oblique" in lowered
+                family = stem
+                for word in FONT_STYLE_WORDS:
+                    family = re.sub(word, "", family, flags=re.IGNORECASE)
+                family = re.sub(r"-{2,}", "-", family).strip("-") or stem
+                key = re.sub(r"[^a-z0-9]+", "-", family.lower()).strip("-")
+                if not key:
+                    continue
+                entry = found.setdefault(key, {"label": font_label(family), "files": {}})
+                entry["files"].setdefault((bold, italic), str(path))
+        FONT_REGISTRY.update(found)
+        return FONT_REGISTRY
+
+
+def font_choices() -> list[dict]:
+    """What the editor offers, installed-and-preferred families first."""
+    registry = discover_fonts()
+    def order(key: str) -> tuple:
+        return (FONT_PREFERENCE.index(key), "") if key in FONT_PREFERENCE else (len(FONT_PREFERENCE), key)
+    return [{"key": key, "label": entry["label"], "category": font_category(entry["label"]),
+             "bold": any(style[0] for style in entry["files"]),
+             "italic": any(style[1] for style in entry["files"])}
+            for key, entry in sorted(registry.items(), key=lambda item: order(item[0]))]
+
+
+def font_file(key: str, style: str = "regular") -> Path | None:
+    """Resolve a font key (or legacy alias) plus a style name to a file."""
+    registry = discover_fonts()
+    key = key if key in registry else FONT_ALIASES.get(str(key).lower(), "")
+    entry = registry.get(key)
+    if not entry or not entry["files"]:
+        return None
+    wanted = {"bold": (True, False), "italic": (False, True), "bolditalic": (True, True),
+              "bold-italic": (True, True)}.get(str(style).lower(), (False, False))
+    # Fall back through the closest styles rather than refusing to render.
+    for candidate in (wanted, (wanted[0], False), (False, wanted[1]), (False, False)):
+        if entry["files"].get(candidate):
+            return Path(entry["files"][candidate])
+    return Path(sorted(entry["files"].values())[0])
+
 
 STATE_CACHE: dict[str, tuple[float, dict[str, dict]]] = {}
 STATE_LOCK = threading.Lock()
@@ -316,12 +390,12 @@ def clean_element(payload: dict, existing: dict | None = None) -> dict:
             "height": clamp_number(payload.get("height", existing.get("height")), 0, CANVAS_MAX, 0),
         })
         return element
-    family = str(payload.get("font", existing.get("font", "system"))).strip().lower()
+    family = str(payload.get("font", existing.get("font", DEFAULT_FONT))).strip().lower()
     alignment = str(payload.get("align", existing.get("align", "left"))).strip().lower()
     element.update({
         "size": clamp_number(payload.get("size", existing.get("size")), 6, 512, 48),
         "colour": as_colour(payload.get("colour", existing.get("colour")), "#f8fafc"),
-        "font": family if family in DISPLAY_FONTS else "system",
+        "font": family if FONT_KEY_RE.match(family) else DEFAULT_FONT,
         "bold": as_flag(payload.get("bold", existing.get("bold")), True),
         "italic": as_flag(payload.get("italic", existing.get("italic")), False),
         "align": alignment if alignment in ALIGNMENTS else "left",
@@ -396,22 +470,27 @@ RESAMPLE = getattr(getattr(Image, "Resampling", Image), "BICUBIC") if HAVE_PIL e
 DOWNSCALE = getattr(getattr(Image, "Resampling", Image), "LANCZOS") if HAVE_PIL else None
 
 
-def load_font(family: str, size: int, bold: bool, italic: bool):
-    """A DejaVu file for the requested style, falling back to Pillow's built-in
-    font: a canvas must still render if the font package is missing."""
-    key = (family, max(6, int(size)), bool(bold), bool(italic))
+def load_font(name: str, size: int, bold: bool, italic: bool):
+    """A font file for the requested family/style, falling back to the closest
+    available style and finally to Pillow's built-in font, so a missing package
+    degrades instead of failing the render."""
+    key = (str(name), max(6, int(size)), bool(bold), bool(italic))
     cached = FONT_CACHE.get(key)
     if cached is not None:
         return cached
     font = None
-    candidates = FONT_FILES.get(family, FONT_FILES["system"]).get((bool(bold), bool(italic)), ())
-    for path in candidates:
-        if Path(path).exists():
-            try:
-                font = ImageFont.truetype(path, key[1])
-                break
-            except OSError:
-                continue
+    registry = discover_fonts()
+    resolved = registry.get(str(name)) or registry.get(FONT_ALIASES.get(str(name).lower(), ""))
+    if resolved:
+        wanted = (bool(bold), bool(italic))
+        for candidate in (wanted, (wanted[0], False), (False, wanted[1]), (False, False)):
+            path = resolved["files"].get(candidate)
+            if path:
+                try:
+                    font = ImageFont.truetype(path, key[1])
+                    break
+                except OSError:
+                    continue
     if font is None:
         try:
             font = ImageFont.load_default(size=key[1])
@@ -460,11 +539,16 @@ def element_text(element: dict, lookup) -> str:
 def text_layer(element: dict, content: str, scale: float):
     """Render a text/entity element onto its own RGBA layer.
 
-    The layer's top-left IS the text's top-left, so an element's x/y means the
-    same thing in the editor and in the rendered image (the only extra is a
-    little padding on the right/bottom for the drop shadow)."""
+    Returns (layer, (content_width, content_height)) — the layer carries
+    symmetric padding for the shadow, so the layer centre *is* the element's
+    centre; the caller needs the content size to rotate and place it the way CSS
+    does.
+
+    Vertical placement mirrors a CSS line box: the leftover leading is split
+    above the ascender, which is exactly where Pillow anchors text (anchor 'la').
+    Without this, text sits a few pixels off from the editor at large sizes."""
     size = max(6, int(round(number(element.get("size"), 48) * scale)))
-    font = load_font(str(element.get("font", "system")), size, as_flag(element.get("bold"), True),
+    font = load_font(str(element.get("font", DEFAULT_FONT)), size, as_flag(element.get("bold"), True),
                      as_flag(element.get("italic"), False))
     line_height = max(0.6, number(element.get("line_height"), 1.15))
     measure = ImageDraw.Draw(Image.new("RGBA", (1, 1)))
@@ -473,28 +557,44 @@ def text_layer(element: dict, content: str, scale: float):
     if not lines:
         lines = [""]
     widths = [text_width(measure, line, font) for line in lines]
-    # A bitmap fallback font reports no bearings, hence the floor of 1px.
     block_width = max(1, max(widths))
     line_step = max(1, int(round(size * line_height)))
+    try:
+        ascent, descent = font.getmetrics()
+    except AttributeError:  # Pillow's bitmap fallback
+        ascent, descent = int(size * 0.8), int(size * 0.2)
+    leading = (line_step - (ascent + descent)) / 2
+    block_height = line_step * len(lines)
     padding = max(2, int(round(size * 0.12)))
-    layer = Image.new("RGBA", (block_width + padding, line_step * len(lines) + padding), (0, 0, 0, 0))
-    painter = ImageDraw.Draw(layer)
+    layer = Image.new("RGBA", (block_width + padding * 2, block_height + padding * 2), (0, 0, 0, 0))
+    body = Image.new("RGBA", layer.size, (0, 0, 0, 0))
+    painter = ImageDraw.Draw(body)
     colour = hex_rgb(as_colour(element.get("colour"), "#f8fafc")) + (255,)
-    shadow = as_flag(element.get("shadow"), True)
     align = str(element.get("align", "left"))
+    positions = []
     for index, line in enumerate(lines):
         if align == "center":
-            x = (block_width - widths[index]) / 2
+            x = padding + (block_width - widths[index]) / 2
         elif align == "right":
-            x = block_width - widths[index]
+            x = padding + (block_width - widths[index])
         else:
-            x = 0
-        y = index * line_step
-        if shadow:
-            offset = max(1, int(round(size * 0.05)))
-            painter.text((x + offset, y + offset), line, font=font, fill=(0, 0, 0, 220))
+            x = padding
+        positions.append((x, padding + index * line_step + leading))
+    for (x, y), line in zip(positions, lines):
         painter.text((x, y), line, font=font, fill=colour)
-    return layer
+    if as_flag(element.get("shadow"), True):
+        # A soft shadow, the equivalent of the editor's CSS '0 1px 3px': blur the
+        # glyphs underneath instead of stamping a hard offset copy.
+        shadow = Image.new("RGBA", layer.size, (0, 0, 0, 0))
+        softener = ImageDraw.Draw(shadow)
+        off_y = max(1, int(round(size * 0.02)))
+        for (x, y), line in zip(positions, lines):
+            softener.text((x, y + off_y), line, font=font, fill=(0, 0, 0, 205))
+        shadow = shadow.filter(ImageFilter.GaussianBlur(max(1.0, size * 0.035)))
+        layer = Image.alpha_composite(shadow, body)
+    else:
+        layer = body
+    return layer, (block_width, block_height)
 
 
 def image_layer(element: dict, scale: float) -> Image.Image | None:
@@ -522,7 +622,7 @@ def image_layer(element: dict, scale: float) -> Image.Image | None:
     if (width, height) != (native_width, native_height):
         method = DOWNSCALE if width * height < native_width * native_height else RESAMPLE
         source = source.resize((width, height), method)
-    return source
+    return source, source.size
 
 
 def apply_alpha(layer: Image.Image, opacity: float) -> Image.Image:
@@ -622,16 +722,20 @@ def render_canvas(canvas: dict, width: int | None = None, height: int | None = N
     for element in canvas.get("elements", []):
         if not as_flag(element.get("visible"), True):
             continue
-        if element.get("type") == "image":
-            layer = image_layer(element, scale)
-            if layer is None:
-                continue  # a missing upload must not lose the rest of the canvas
-        else:
-            layer = text_layer(element, element_text(element, lookup), scale)
-        layer = apply_alpha(layer, clamp_number(element.get("opacity"), 0, 100, 100))
-        layer = rotate_layer(layer, number(element.get("rotation"), 0))
-        position = (int(round(number(element.get("x"), 0) * scale)), int(round(number(element.get("y"), 0) * scale)))
-        image.paste(layer, position, layer)
+        built = (image_layer(element, scale) if element.get("type") == "image"
+                 else text_layer(element, element_text(element, lookup), scale))
+        if built is None:
+            continue  # a missing upload must not lose the rest of the canvas
+        layer, (content_width, content_height) = built
+        layer = apply_alpha(rotate_layer(layer, number(element.get("rotation"), 0)),
+                            clamp_number(element.get("opacity"), 0, 100, 100))
+        # Rotate about the element's own centre and put that centre where the
+        # element's box puts it — the same thing CSS does with its default
+        # transform-origin, so a rotated element lands in the same place in the
+        # editor and in the image.
+        centre_x = number(element.get("x"), 0) * scale + content_width / 2
+        centre_y = number(element.get("y"), 0) * scale + content_height / 2
+        image.paste(layer, (int(round(centre_x - layer.width / 2)), int(round(centre_y - layer.height / 2))), layer)
 
     buffer = io.BytesIO()
     if image_format.upper() in ("JPG", "JPEG"):
@@ -872,6 +976,22 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json({"error": f"Could not store the image: {error}"}, 500)
         self.send_json({"name": name, "url": f"uploads/{name}"}, HTTPStatus.CREATED)
 
+    def send_font(self, key: str) -> None:
+        """Serve a discovered font file to the editor so it previews with the
+        same typeface the renderer uses."""
+        path = font_file(key, str(self.query().get("style", ["regular"])[0]))
+        if not path or not path.exists():
+            return self.send_json({"error": "No such font."}, 404)
+        data = path.read_bytes()
+        self.send_response(200)
+        self.send_header("Content-Type", "font/otf" if path.suffix.lower() == ".otf" else "font/ttf")
+        # Font files never change while the add-on runs, so unlike canvases they
+        # are safe (and worth) caching.
+        self.send_header("Cache-Control", "public, max-age=86400")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
     def send_upload(self, name: str) -> None:
         path = upload_path(name)
         if not path or not path.exists():
@@ -911,9 +1031,14 @@ class Handler(BaseHTTPRequestHandler):
             return self.entities()
         if path == "/api/uploads":
             return self.uploads()
+        if path == "/api/fonts":
+            return self.send_json({"items": font_choices(), "aliases": FONT_ALIASES, "default": DEFAULT_FONT})
         canvas_match = re.fullmatch(r"/canvas/([a-z0-9-]+)(?:\.(png|jpg|jpeg))?", path)
         if canvas_match:
             return self.canvas_image(canvas_match.group(1), canvas_match.group(2))
+        font_match = re.fullmatch(r"/fonts/([a-z0-9-]+)", path)
+        if font_match:
+            return self.send_font(font_match.group(1))
         upload_suffix = re.fullmatch(r"/(?:uploads|api/uploads)/([A-Za-z0-9._-]+)", path)
         if upload_suffix:
             return self.send_upload(upload_suffix.group(1))

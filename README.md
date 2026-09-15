@@ -28,6 +28,11 @@ accept an image URL — not a Lovelace dashboard. This add-on gives you those UR
   attribute) with its unit, a chosen number of decimals and optional prefix and
   suffix text. Custom text can also embed `{{sensor.entity_id}}` or
   `{{sensor.entity_id.attribute}}` inline.
+- **Five font families** installed in the image (DejaVu, Liberation, Noto, Roboto,
+  Ubuntu) in regular/bold/italic, offered through a picker that reflects what the
+  image has. The editor is served the same font files it renders with, so the
+  preview matches the image to within a pixel. Adding a family = adding an `apk`
+  package.
 - **Uploaded PNG/JPG icons and images** (with transparency), usable as elements
   or as the canvas background (cover / contain / stretch).
 - **PNG or JPG output**, at the canvas size or scaled with `?w=` / `?h=`.
