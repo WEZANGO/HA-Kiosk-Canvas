@@ -1,0 +1,27 @@
+name: Kiosk Canvas Displays
+version: 0.1.0
+slug: kiosk_canvas_displays
+description: Compose text, icons and live Home Assistant entity values on a canvas, served as a dynamic PNG/JPG image URL for automations, kiosks and media screens.
+url: https://github.com/example/kiosk-canvas-displays
+arch:
+  - aarch64
+  - amd64
+  - armv7
+  - armhf
+  - i386
+startup: application
+init: false
+ingress: true
+ingress_port: 8097
+panel_icon: mdi:image-multiple
+panel_title: Kiosk Canvas
+# Reading entity states (so a canvas always shows fresh values) uses the
+# Supervisor API proxy, which needs this permission instead of a user token.
+homeassistant_api: true
+ports:
+  8097/tcp: 8097
+ports_description:
+  8097/tcp: Direct access for automations, kiosks and media players
+options: {}
+schema: {}
+backup: hot

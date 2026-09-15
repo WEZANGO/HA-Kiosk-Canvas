@@ -1,0 +1,977 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Kiosk Canvas Displays</title>
+<style>
+  :root { color-scheme: dark; font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: #0f172a; color: #f8fafc; font-size: 15px; }
+  button, input, select, textarea { font: inherit; color: #f8fafc; }
+  input, select, textarea { width: 100%; padding: 7px 9px; border: 1px solid #475569; border-radius: 7px; background: #0b1222; }
+  input[type=color] { padding: 2px; height: 34px; }
+  input[type=range] { padding: 0; border: 0; background: transparent; accent-color: #38bdf8; }
+  input[type=checkbox] { width: auto; margin: 0; accent-color: #38bdf8; }
+  button { padding: 8px 13px; border: 0; border-radius: 7px; background: #1e293b; border: 1px solid #475569; cursor: pointer; }
+  button:hover { background: #334155; }
+  button.primary { background: #38bdf8; color: #082f49; border-color: #38bdf8; font-weight: 700; }
+  button.primary:hover { filter: brightness(1.08); }
+  button.danger { background: #7f1d1d; border-color: #b91c1c; }
+  button.ghost { background: transparent; }
+  .app { display: flex; flex-direction: column; height: 100vh; }
+  header { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; padding: 10px 14px; background: #111c33; border-bottom: 1px solid #334155; }
+  header .group { display: flex; gap: 7px; align-items: center; }
+  header label { color: #94a3b8; font-size: .82rem; }
+  header input, header select { width: auto; }
+  header .spacer { flex: 1; }
+  .status { color: #94a3b8; font-size: .82rem; min-width: 90px; }
+  .status.error { color: #fca5a5; }
+  main { flex: 1; display: grid; grid-template-columns: 240px 1fr 300px; min-height: 0; }
+  aside { background: #111c33; overflow-y: auto; padding: 12px; }
+  #layers { border-right: 1px solid #334155; }
+  #inspector { border-left: 1px solid #334155; }
+  h3 { margin: 4px 0 10px; font-size: .8rem; text-transform: uppercase; letter-spacing: .08em; color: #94a3b8; }
+  .add-row { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 6px; margin-bottom: 12px; }
+  .add-row button { padding: 8px 4px; font-size: .82rem; }
+  .layer { display: flex; align-items: center; gap: 7px; padding: 7px 8px; border: 1px solid #334155; border-radius: 7px; margin-bottom: 6px; cursor: pointer; background: #0b1222; }
+  .layer.selected { border-color: #38bdf8; background: #0e2436; }
+  .layer .kind { font-size: .68rem; text-transform: uppercase; color: #7dd3fc; letter-spacing: .06em; }
+  .layer .label { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .layer .icon-btn { background: transparent; border: 0; padding: 2px 4px; color: #94a3b8; }
+  .layer .icon-btn:hover { color: #f8fafc; background: transparent; }
+  #stage-wrap { position: relative; overflow: auto; display: grid; place-items: center; padding: 22px; background:
+      repeating-conic-gradient(#0d1526 0% 25%, #101b2e 0% 50%) 50% / 24px 24px; }
+  #stage { position: relative; background: #0f172a; box-shadow: 0 18px 50px rgba(0,0,0,.55); transform-origin: center; }
+  #stage img.bg { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+  .el { position: absolute; transform-origin: top left; user-select: none; white-space: pre-wrap; cursor: move; }
+  .el.text, .el.entity { text-shadow: 0 1px 3px rgba(0,0,0,.85); line-height: 1.15; }
+  .el img { display: block; width: 100%; height: 100%; pointer-events: none; }
+  .el .txt { display: block; }
+  .el.selected { outline: 2px dashed #38bdf8; outline-offset: 2px; }
+  .el .handle { position: absolute; right: -7px; bottom: -7px; width: 14px; height: 14px; background: #38bdf8; border: 2px solid #082f49; border-radius: 3px; cursor: nwse-resize; }
+  #preview-overlay { position: absolute; inset: 0; display: none; background: #0f172a; }
+  #preview-overlay img { width: 100%; height: 100%; }
+  #stage-wrap.previewing #preview-overlay { display: block; }
+  #stage-wrap.previewing .el { visibility: hidden; }
+  .hint { color: #94a3b8; font-size: .78rem; line-height: 1.5; margin: 6px 0 12px; }
+  .field { margin-bottom: 10px; }
+  .field > label { display: block; color: #94a3b8; font-size: .78rem; margin-bottom: 4px; }
+  .field.row { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; align-items: end; }
+  .field.row > div > label { display: block; color: #94a3b8; font-size: .78rem; margin-bottom: 4px; }
+  .check { display: flex; align-items: center; gap: 7px; color: #cbd5e1; font-size: .85rem; margin-bottom: 8px; }
+  .url-box { background: #0b1222; border: 1px solid #334155; border-radius: 7px; padding: 8px; font-family: ui-monospace, monospace; font-size: .72rem; word-break: break-all; color: #7dd3fc; }
+  .url-line { display: flex; gap: 6px; align-items: center; margin-bottom: 8px; }
+  .url-line .url-box { flex: 1; }
+  #toast { position: fixed; left: 50%; bottom: 22px; transform: translateX(-50%); background: #14532d; border: 1px solid #22c55e; color: #f0fdf4; padding: 9px 16px; border-radius: 8px; opacity: 0; transition: opacity .2s; pointer-events: none; }
+  #toast.show { opacity: 1; }
+  #toast.error { background: #7f1d1d; border-color: #ef4444; }
+  .entity-hit { display: block; width: 100%; text-align: left; padding: 6px 8px; border-radius: 6px; background: #0b1222; border: 1px solid #334155; margin-bottom: 4px; font-size: .8rem; }
+  .entity-hit:hover { border-color: #38bdf8; }
+  .entity-hit .sub { display: block; color: #94a3b8; font-size: .72rem; }
+  #entity-results { max-height: 220px; overflow-y: auto; margin-top: 6px; }
+</style>
+</head>
+<body>
+<div class="app">
+  <header>
+    <div class="group">
+      <label for="canvas-pick">Canvas</label>
+      <select id="canvas-pick"></select>
+      <button id="new-canvas" title="Create a canvas">＋ New</button>
+      <button id="duplicate-canvas" title="Duplicate this canvas">Duplicate</button>
+      <button id="delete-canvas" class="danger" title="Delete this canvas">Delete</button>
+    </div>
+    <div class="group">
+      <label for="preset">Size</label>
+      <select id="preset"></select>
+      <input id="canvas-width" type="number" min="64" max="4096" step="1" style="width:74px" title="Canvas width" />
+      <span style="color:#64748b">×</span>
+      <input id="canvas-height" type="number" min="64" max="4096" step="1" style="width:74px" title="Canvas height" />
+    </div>
+    <div class="group">
+      <label for="bg-color">Background</label>
+      <input id="bg-color" type="color" style="width:44px" title="Background colour" />
+      <select id="bg-image" style="min-width:130px" title="Background image"><option value="">No image</option></select>
+      <select id="bg-fit" title="How the background image fills the canvas">
+        <option value="cover">Cover</option><option value="contain">Contain</option><option value="stretch">Stretch</option>
+      </select>
+    </div>
+    <div class="spacer"></div>
+    <button id="save" class="primary">Save</button>
+    <button id="preview-toggle" title="Show the exact server-rendered image">Real preview</button>
+    <span id="status" class="status"></span>
+  </header>
+
+  <main>
+    <aside id="layers">
+      <h3>Add</h3>
+      <div class="add-row">
+        <button data-add="text">Text</button>
+        <button data-add="image">Image</button>
+        <button data-add="entity">Entity</button>
+      </div>
+      <h3>Layers</h3>
+      <p class="hint">Items lower in the list draw on top. Use ▲▼ to reorder, 👁 to hide.</p>
+      <div id="layer-list"></div>
+    </aside>
+
+    <section id="stage-wrap">
+      <div id="stage">
+        <img class="bg" id="stage-bg" alt="" hidden />
+        <div id="preview-overlay"><img id="preview-image" alt="Server-rendered canvas" /></div>
+      </div>
+    </section>
+
+    <aside id="inspector">
+      <h3 id="inspector-title">Canvas</h3>
+      <div id="inspector-body"><p class="hint">Select an element on the canvas, or add one on the left.<br /><br />
+        Drag to move. Drag the blue corner handle to scale. Arrow keys nudge (hold Shift for 10px).
+        Delete removes the selected element.</p></div>
+      <h3>Image URL</h3>
+      <p class="hint">Put this in an automation, a media player screen or any device that shows a picture.</p>
+      <div id="urls"></div>
+    </aside>
+  </main>
+</div>
+<div id="toast"></div>
+<script>
+(() => {
+  const ACCESS_TOKEN = '__ACCESS_TOKEN__';
+  const DIRECT_PORT = '8097';
+  const BASE = location.pathname.replace(/\/+$/, '') + '/';
+  // Every request must carry the shared token: the editor is also used on a
+  // direct connection (no Home Assistant session), where nothing else
+  // authenticates it. Through ingress the token is simply ignored.
+  const api = path => {
+    const target = BASE + String(path).replace(/^\/+/, '');
+    if (!ACCESS_TOKEN) return target;
+    return target + (target.includes('?') ? '&' : '?') + `auth=${encodeURIComponent(ACCESS_TOKEN)}`;
+  };
+  const directUrl = (path, query = '') =>
+    `${location.protocol}//${location.hostname}:${DIRECT_PORT}${path}?auth=${encodeURIComponent(ACCESS_TOKEN)}${query}`;
+  const $ = id => document.getElementById(id);
+  const stage = $('stage'), stageWrap = $('stage-wrap'), stageBg = $('stage-bg');
+
+  const PRESETS = [
+    ['1920x1080', 1920, 1080], ['1280x720', 1280, 720], ['1080x1920', 1080, 1920],
+    ['1080x1080', 1080, 1080], ['1024x600', 1024, 600], ['800x480', 800, 480],
+    ['1920x1200', 1920, 1200], ['3840x2160', 3840, 2160]
+  ];
+  const FONTS = [['system', 'Sans'], ['serif', 'Serif'], ['mono', 'Monospace']];
+  const FONT_CSS = { system: 'system-ui, -apple-system, "Segoe UI", sans-serif', serif: 'Georgia, serif', mono: 'ui-monospace, Menlo, monospace' };
+
+  function blankCanvas() {
+    return { id: '', name: 'New canvas', width: 1280, height: 720,
+             background: { color: '#0f172a', image: '', fit: 'cover' }, elements: [] };
+  }
+  function newId() { return Math.random().toString(36).slice(2, 12); }
+
+  let canvases = [], canvas = blankCanvas(), selectedId = null, dirty = false;
+  let fit = 1, previewOn = false, previewTimer = null, previewClock = null, previewBusy = false;
+  const valueCache = {};                 // "entity|attr|decimals|unit" -> server-formatted entry
+  const measure = document.createElement('canvas').getContext('2d');
+
+
+  // ------------------------------------------------------------- plumbing
+  async function request(path, options) {
+    const response = await fetch(api(path), options);
+    const type = response.headers.get('content-type') || '';
+    const payload = type.includes('json') ? await response.json() : await response.text();
+    if (!response.ok) throw new Error((payload && payload.error) || `Request failed (${response.status})`);
+    return payload;
+  }
+  function toast(message, error = false) {
+    const node = $('toast');
+    node.textContent = message;
+    node.classList.toggle('error', !!error);
+    node.classList.add('show');
+    clearTimeout(node._timer);
+    node._timer = setTimeout(() => node.classList.remove('show'), 1900);
+  }
+  function setStatus(text, error = false) {
+    $('status').textContent = text;
+    $('status').classList.toggle('error', !!error);
+  }
+  function markDirty() {
+    dirty = true;
+    setStatus('Unsaved changes');
+    schedulePreview();
+  }
+
+  // ---------------------------------------------------------------- values
+  const tokenPattern = /\{\{\s*([a-z_]+(?:\.[a-z0-9_]+)+)(?:\.([A-Za-z0-9_]+))?\s*\}\}/g;
+  const valueKey = (entity, attribute, decimals, unit) => `${entity}|${attribute}|${decimals}|${unit ? 1 : 0}`;
+  const valueOf = key => (valueCache[key] ? valueCache[key].value : '—');
+
+  function elementText(item) {
+    if (item.type === 'text') {
+      return String(item.text || '').replace(tokenPattern, (whole, entity, attribute) =>
+        valueOf(valueKey(entity, attribute || '', -1, false)));
+    }
+    const key = valueKey(item.entity || '', item.attribute || '', item.decimals ?? -1, item.show_unit !== false);
+    return `${item.prefix || ''}${item.entity ? valueOf(key) : '—'}${item.suffix || ''}`;
+  }
+
+  async function refreshValues() {
+    const wanted = new Map();
+    for (const item of canvas.elements) {
+      if (item.type === 'entity' && item.entity) {
+        const key = valueKey(item.entity, item.attribute || '', item.decimals ?? -1, item.show_unit !== false);
+        wanted.set(key, `api/entity/${encodeURIComponent(item.entity)}?attribute=${encodeURIComponent(item.attribute || '')}` +
+          `&decimals=${item.decimals ?? -1}&show_unit=${item.show_unit !== false}`);
+      } else if (item.type === 'text') {
+        for (const match of String(item.text || '').matchAll(tokenPattern)) {
+          const key = valueKey(match[1], match[2] || '', -1, false);
+          wanted.set(key, `api/entity/${encodeURIComponent(match[1])}?attribute=${encodeURIComponent(match[2] || '')}` +
+            `&decimals=-1&show_unit=false`);
+        }
+      }
+    }
+    let changed = false;
+    await Promise.all([...wanted].map(async ([key, path]) => {
+      try {
+        const data = await request(path);
+        const before = valueCache[key] && valueCache[key].value;
+        valueCache[key] = data;
+        if (before !== data.value) changed = true;
+      } catch (error) {
+        if (!valueCache[key]) { valueCache[key] = { value: '—', error: error.message }; changed = true; }
+      }
+    }));
+    if (changed) {
+      updateStageValues();
+      if (selectedId && canvas.elements.some(item => item.id === selectedId)) renderInspector();
+    }
+  }
+  const elementNode = id => stage.querySelector(`.el[data-id="${id}"]`);
+  function updateStageValues() {
+    for (const item of canvas.elements) {
+      if (item.type === 'image') continue;
+      const node = elementNode(item.id), text = node && node.querySelector('.txt');
+      if (text) text.textContent = wrapText(elementText(item), item);
+      if (node) node.style.display = item.visible === false ? 'none' : '';
+    }
+  }
+
+  // --------------------------------------------------------------- drawing
+  const fontString = item => `${item.italic ? 'italic ' : ''}${item.bold === false ? '400' : '700'} ` +
+    `${Math.max(6, Number(item.size) || 48)}px ${FONT_CSS[item.font] || FONT_CSS.system}`;
+
+  function wrapText(text, item) {
+    const limit = Number(item.wrap) || 0;
+    if (limit <= 0) return text;
+    measure.font = fontString(item);
+    const lines = [];
+    for (const paragraph of String(text).split('\n')) {
+      if (measure.measureText(paragraph).width <= limit) { lines.push(paragraph); continue; }
+      let current = '';
+      for (const word of paragraph.split(' ')) {
+        const candidate = current ? `${current} ${word}` : word;
+        if (current && measure.measureText(candidate).width > limit) { lines.push(current); current = word; }
+        else current = candidate;
+      }
+      lines.push(current);
+    }
+    return lines.join('\n');
+  }
+
+  function elementNodeFor(item) {
+    const node = document.createElement('div');
+    node.className = `el ${item.type}`;
+    node.dataset.id = item.id;
+    node.style.left = `${Number(item.x) || 0}px`;
+    node.style.top = `${Number(item.y) || 0}px`;
+    node.style.opacity = (item.opacity ?? 100) / 100;
+    node.style.transform = `rotate(${Number(item.rotation) || 0}deg)`;
+    if (item.visible === false) node.style.display = 'none';
+    if (item.type === 'image') {
+      const image = document.createElement('img');
+      const width = Number(item.width) || 240, height = Number(item.height) || 0;
+      image.src = item.file ? api(`uploads/${item.file}`) : '';
+      image.alt = item.file || 'empty image';
+      node.style.width = `${width}px`;
+      if (height > 0) { node.style.height = `${height}px`; }
+      if (!item.file) {
+        node.style.width = `${width}px`;
+        node.style.height = `${height > 0 ? height : width * 0.6}px`;
+        node.style.border = '2px dashed #64748b';
+        node.dataset.empty = '1';
+      }
+      node.append(image);
+    } else {
+      const label = document.createElement('span');
+      label.className = 'txt';
+      label.textContent = wrapText(elementText(item), item);
+      node.append(label);
+      node.style.font = fontString(item);
+      node.style.color = item.colour || '#f8fafc';
+      node.style.textAlign = item.align || 'left';
+      node.style.lineHeight = String(item.line_height || 1.15);
+      node.style.textShadow = item.shadow === false ? 'none' : '0 1px 3px rgba(0,0,0,.85)';
+      if (Number(item.wrap) > 0) node.style.width = `${Number(item.wrap)}px`;
+      if (item.type === 'entity' && !item.entity) label.textContent = 'Pick an entity →';
+    }
+    const handle = document.createElement('div');
+    handle.className = 'handle';
+    handle.dataset.handle = '1';
+    node.append(handle);
+    return node;
+  }
+
+  function renderStage() {
+    stage.style.width = `${canvas.width}px`;
+    stage.style.height = `${canvas.height}px`;
+    stage.style.background = canvas.background.color || '#0f172a';
+    if (canvas.background.image) {
+      stageBg.src = api(`uploads/${canvas.background.image}`);
+      stageBg.style.objectFit = canvas.background.fit || 'cover';
+      stageBg.hidden = false;
+    } else {
+      stageBg.removeAttribute('src');
+      stageBg.hidden = true;
+    }
+    for (const node of [...stage.querySelectorAll('.el')]) node.remove();
+    for (const item of canvas.elements) stage.append(elementNodeFor(item));
+    fitStage();
+    syncSelection();
+  }
+
+  function fitStage() {
+    const pad = 44;
+    fit = Math.min(1, (stageWrap.clientWidth - pad) / canvas.width, (stageWrap.clientHeight - pad) / canvas.height);
+    fit = Math.max(0.05, fit);
+    stage.style.transform = `scale(${fit})`;
+  }
+
+  function syncSelection() {
+    for (const node of stage.querySelectorAll('.el')) node.classList.toggle('selected', node.dataset.id === selectedId);
+  }
+
+  // ------------------------------------------------------------ interaction
+  let drag = null;
+  stage.addEventListener('pointerdown', event => {
+    const node = event.target.closest('.el');
+    if (!node) { selectedId = null; syncSelection(); renderInspector(); return; }
+    const item = canvas.elements.find(entry => entry.id === node.dataset.id);
+    if (!item) return;
+    selectedId = item.id;
+    syncSelection();
+    renderInspector();
+    const resizing = !!event.target.closest('[data-handle]');
+    drag = {
+      id: item.id, resizing, startX: event.clientX, startY: event.clientY,
+      originX: Number(item.x) || 0, originY: Number(item.y) || 0,
+      size: Number(item.size) || 48, width: Number(item.width) || 240, height: Number(item.height) || 0, moved: false
+    };
+    // Capture keeps the drag alive when the pointer leaves the element. Not all
+    // environments allow it (synthetic events, older browsers) — never let that
+    // abort the drag itself.
+    try { event.target.setPointerCapture(event.pointerId); } catch (error) { /* drag still works */ }
+    event.preventDefault();
+  });
+  stage.addEventListener('pointermove', event => {
+    if (!drag) return;
+    const item = canvas.elements.find(entry => entry.id === drag.id);
+    if (!item) return;
+    const dx = (event.clientX - drag.startX) / fit, dy = (event.clientY - drag.startY) / fit;
+    if (Math.abs(dx) > 1 || Math.abs(dy) > 1) drag.moved = true;
+    if (drag.resizing) {
+      // Scaling is deliberately independent of the element's current size:
+      // dragging 200px doubles it (halving going left), so a small element does
+      // not explode the moment the handle moves a few pixels.
+      const factor = Math.max(0.05, Math.min(8, 1 + dx / 200));
+      if (item.type === 'image') {
+        item.width = Math.round(Math.min(4096, Math.max(1, drag.width * factor)));
+        if (drag.height > 0) item.height = Math.round(Math.min(4096, Math.max(1, drag.height * factor)));
+        const node = elementNode(drag.id);
+        if (node) { node.style.width = `${item.width}px`; if (item.height > 0) node.style.height = `${item.height}px`; }
+      } else {
+        item.size = Math.round(Math.min(512, Math.max(6, drag.size * factor)));
+        const node = elementNode(drag.id);
+        if (node) node.style.font = fontString(item);
+      }
+    } else {
+      const snap = event.altKey ? 1 : 8;
+      const snapTo = (value, origin) => {
+        const raw = origin + value;
+        return event.altKey ? Math.round(raw) : Math.round(raw / snap) * snap;
+      };
+      item.x = snapTo(dx, drag.originX);
+      item.y = snapTo(dy, drag.originY);
+      const node = elementNode(drag.id);
+      if (node) { node.style.left = `${item.x}px`; node.style.top = `${item.y}px`; }
+    }
+    markDirty();
+  });
+  const endDrag = () => {
+    if (!drag) return;
+    const moved = drag.moved;
+    drag = null;
+    if (moved) { renderInspector(); schedulePreview(); }
+  };
+  stage.addEventListener('pointerup', endDrag);
+  stage.addEventListener('pointercancel', endDrag);
+  // Also finish on a window-level release: if pointer capture was not available
+  // and the pointer is released outside the canvas, the drag must not stick.
+  window.addEventListener('pointerup', endDrag);
+  window.addEventListener('pointercancel', endDrag);
+
+  document.addEventListener('keydown', event => {
+    if (['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement.tagName)) return;
+    const item = canvas.elements.find(entry => entry.id === selectedId);
+    if (!item) return;
+    const step = event.shiftKey ? 10 : 1;
+    const moves = { ArrowLeft: [-step, 0], ArrowRight: [step, 0], ArrowUp: [0, -step], ArrowDown: [0, step] };
+    if (moves[event.key]) {
+      item.x = (Number(item.x) || 0) + moves[event.key][0];
+      item.y = (Number(item.y) || 0) + moves[event.key][1];
+      const node = elementNode(item.id);
+      if (node) { node.style.left = `${item.x}px`; node.style.top = `${item.y}px`; }
+      markDirty();
+      event.preventDefault();
+    } else if (event.key === 'Delete' || event.key === 'Backspace') {
+      removeElement(item.id);
+      event.preventDefault();
+    } else if (event.key === 'Escape') {
+      selectedId = null; syncSelection(); renderInspector();
+    }
+  });
+  window.addEventListener('resize', fitStage);
+
+  // ---------------------------------------------------------------- layers
+  function renderLayers() {
+    const list = $('layer-list');
+    list.textContent = '';
+    if (!canvas.elements.length) {
+      const empty = document.createElement('p');
+      empty.className = 'hint';
+      empty.textContent = 'No elements yet — add one above.';
+      list.append(empty);
+      return;
+    }
+    canvas.elements.forEach((item, index) => {
+      const row = document.createElement('div');
+      row.className = `layer${item.id === selectedId ? ' selected' : ''}`;
+      const kind = document.createElement('span');
+      kind.className = 'kind';
+      kind.textContent = item.type;
+      const label = document.createElement('span');
+      label.className = 'label';
+      label.textContent = item.name || (item.type === 'image' ? (item.file || 'image')
+        : item.type === 'entity' ? (item.entity || 'no entity') : (item.text || '').slice(0, 28) || 'text');
+      const eye = document.createElement('button');
+      eye.className = 'icon-btn';
+      eye.textContent = item.visible === false ? '🚫' : '👁';
+      eye.title = 'Show/hide';
+      eye.onclick = () => { item.visible = item.visible === false; markDirty(); renderLayers(); renderStage(); };
+      const back = document.createElement('button');
+      back.className = 'icon-btn';
+      back.textContent = '▲';
+      back.title = 'Move behind';
+      back.onclick = () => swap(index, index - 1);
+      const front = document.createElement('button');
+      front.className = 'icon-btn';
+      front.textContent = '▼';
+      front.title = 'Move in front';
+      front.onclick = () => swap(index, index + 1);
+      row.append(kind, label, back, front, eye);
+      row.onclick = event => { if (event.target === row || event.target === label || event.target === kind) { selectedId = item.id; syncSelection(); renderLayers(); renderInspector(); } };
+      list.append(row);
+    });
+  }
+  function swap(from, to) {
+    if (to < 0 || to >= canvas.elements.length) return;
+    const [item] = canvas.elements.splice(from, 1);
+    canvas.elements.splice(to, 0, item);
+    markDirty(); renderLayers(); renderStage();
+  }
+  function removeElement(id) {
+    canvas.elements = canvas.elements.filter(item => item.id !== id);
+    if (selectedId === id) selectedId = null;
+    markDirty(); renderLayers(); renderStage(); renderInspector();
+  }
+
+  // ------------------------------------------------------------- inspector
+  function input(type, value, onChange, props = {}) {
+    const node = document.createElement('input');
+    node.type = type;
+    if (value !== undefined && value !== null) node.value = value;
+    Object.assign(node, props);
+    node.addEventListener('input', () => onChange(type === 'number' ? Number(node.value) : node.value));
+    return node;
+  }
+  const field = (label, control) => {
+    const wrap = document.createElement('div');
+    wrap.className = 'field';
+    const text = document.createElement('label');
+    text.textContent = label;
+    wrap.append(text, control);
+    return wrap;
+  };
+  function slider(value, min, max, step, onChange) {
+    const wrap = document.createElement('div');
+    wrap.style.display = 'flex';
+    wrap.style.gap = '8px';
+    wrap.style.alignItems = 'center';
+    const range = document.createElement('input');
+    range.type = 'range'; range.min = min; range.max = max; range.step = step; range.value = value;
+    range.style.flex = '1';
+    const box = input('number', value, next => { range.value = next; onChange(next); }, { min, max, step, style: 'width:72px' });
+    range.addEventListener('input', () => { box.value = range.value; onChange(Number(range.value)); });
+    wrap.append(range, box);
+    return wrap;
+  }
+  function select(options, value, onChange) {
+    const node = document.createElement('select');
+    for (const [key, label] of options) {
+      const option = document.createElement('option');
+      option.value = key; option.textContent = label;
+      if (String(key) === String(value)) option.selected = true;
+      node.append(option);
+    }
+    node.addEventListener('change', () => onChange(node.value));
+    return node;
+  }
+  function check(label, checked, onChange) {
+    const wrap = document.createElement('label');
+    wrap.className = 'check';
+    const box = document.createElement('input');
+    box.type = 'checkbox'; box.checked = !!checked;
+    box.addEventListener('change', () => onChange(box.checked));
+    const text = document.createElement('span');
+    text.textContent = label;
+    wrap.append(box, text);
+    return wrap;
+  }
+
+  function renderInspector() {
+    const body = $('inspector-body');
+    body.textContent = '';
+    const item = canvas.elements.find(entry => entry.id === selectedId);
+    $('inspector-title').textContent = item ? (item.type === 'text' ? 'Text' : item.type === 'entity' ? 'Entity value' : 'Image') : 'Canvas';
+    if (!item) {
+      body.append(
+        field('Canvas name', input('text', canvas.name, value => { canvas.name = value; markDirty(); })),
+        field('Background colour', input('color', canvas.background.color, value => { canvas.background.color = value; markDirty(); renderStage(); })),
+        field('Background image', select([['', 'No image'], ...uploads.map(name => [name, name])], canvas.background.image,
+          value => { canvas.background.image = value; markDirty(); renderStage(); })),
+      );
+      return;
+    }
+    const update = (key, value, redraw = true) => { item[key] = value; markDirty(); if (redraw) renderStage(); renderLayers(); };
+    body.append(field('Layer name (optional)', input('text', item.name || '', value => update('name', value, false))));
+    if (item.type === 'text') {
+      const area = document.createElement('textarea');
+      area.rows = 4;
+      area.value = item.text || '';
+      area.addEventListener('input', () => { update('text', area.value, false); updateStageValues(); });
+      body.append(field('Text', area));
+      const hint = document.createElement('p');
+      hint.className = 'hint';
+      hint.textContent = 'Tip: {{sensor.entity_id}} or {{sensor.entity_id.attribute}} inside the text is replaced with the live value.';
+      body.append(hint);
+    }
+    if (item.type === 'entity') {
+      body.append(entityPicker(item));
+      body.append(field('Attribute (optional)', input('text', item.attribute || '', value => update('attribute', value))));
+      const row = document.createElement('div');
+      row.className = 'field row';
+      const prefix = document.createElement('div');
+      prefix.append(Object.assign(document.createElement('label'), { textContent: 'Text before' }),
+        input('text', item.prefix || '', value => update('prefix', value)));
+      const suffix = document.createElement('div');
+      suffix.append(Object.assign(document.createElement('label'), { textContent: 'Text after' }),
+        input('text', item.suffix || '', value => update('suffix', value)));
+      row.append(prefix, suffix);
+      body.append(row);
+      body.append(check('Append unit (°C, %, …)', item.show_unit !== false, value => update('show_unit', value)));
+      body.append(field('Decimals (−1 = as reported)', input('number', item.decimals ?? -1, value => update('decimals', Math.max(-1, Math.min(6, value))), { min: -1, max: 6, step: 1 })));
+      const live = document.createElement('p');
+      live.className = 'hint';
+      const key = valueKey(item.entity || '', item.attribute || '', item.decimals ?? -1, item.show_unit !== false);
+      const entry = valueCache[key];
+      live.textContent = entry
+        ? (entry.error ? `Home Assistant said: ${entry.error}` : `Now: ${entry.value}  (${entry.name}, state ${entry.state})`)
+        : 'Reading from Home Assistant…';
+      body.append(live);
+    }
+    if (item.type === 'image') {
+      const picker = document.createElement('div');
+      picker.className = 'field';
+      const label = document.createElement('label');
+      label.textContent = 'Image';
+      const file = document.createElement('input');
+      file.type = 'file';
+      file.accept = 'image/png,image/jpeg,image/webp,image/gif';
+      file.addEventListener('change', async () => {
+        if (!file.files.length) return;
+        try {
+          setStatus('Uploading…');
+          const uploaded = await upload(file.files[0]);
+          update('file', uploaded.name);
+          renderInspector();
+          setStatus('Uploaded');
+        } catch (error) { setStatus(error.message, true); }
+      });
+      const choose = select([['', '— none —'], ...uploads.map(name => [name, name])], item.file || '',
+        value => update('file', value));
+      picker.append(label, file, choose);
+      body.append(picker);
+      body.append(field('Width (px)', input('number', item.width ?? 240, value => update('width', value), { min: 0, max: 4096 })));
+      body.append(field('Height (px, 0 = keep ratio)', input('number', item.height ?? 0, value => update('height', value), { min: 0, max: 4096 })));
+    }
+    if (item.type !== 'image') {
+      body.append(field('Size', slider(item.size ?? 48, 6, 300, 1, value => update('size', value))));
+      body.append(field('Colour', input('color', item.colour || '#f8fafc', value => update('colour', value))));
+      body.append(field('Font', select(FONTS, item.font || 'system', value => update('font', value))));
+      body.append(field('Alignment', select([['left', 'Left'], ['center', 'Centre'], ['right', 'Right']], item.align || 'left',
+        value => update('align', value, false) || updateStageValues())));
+      body.append(check('Bold', item.bold !== false, value => update('bold', value)));
+      body.append(check('Italic', item.italic === true, value => update('italic', value)));
+      body.append(check('Drop shadow', item.shadow !== false, value => update('shadow', value)));
+      body.append(field('Line height', input('number', item.line_height ?? 1.15, value => update('line_height', value), { min: 0.6, max: 3, step: 0.05 })));
+      body.append(field('Wrap at width (0 = off)', input('number', item.wrap ?? 0, value => update('wrap', value), { min: 0, max: 4096 })));
+    }
+    const row = document.createElement('div');
+    row.className = 'field row';
+    const left = document.createElement('div');
+    left.append(Object.assign(document.createElement('label'), { textContent: 'X' }),
+      input('number', item.x ?? 0, value => update('x', value), { min: -4096, max: 4096 }));
+    const top = document.createElement('div');
+    top.append(Object.assign(document.createElement('label'), { textContent: 'Y' }),
+      input('number', item.y ?? 0, value => update('y', value), { min: -4096, max: 4096 }));
+    row.append(left, top);
+    body.append(row);
+    const row2 = document.createElement('div');
+    row2.className = 'field row';
+    const rot = document.createElement('div');
+    rot.append(Object.assign(document.createElement('label'), { textContent: 'Rotation°' }),
+      input('number', item.rotation ?? 0, value => update('rotation', value), { min: -360, max: 360, step: 5 }));
+    const op = document.createElement('div');
+    op.append(Object.assign(document.createElement('label'), { textContent: 'Opacity %' }),
+      input('number', item.opacity ?? 100, value => update('opacity', value), { min: 0, max: 100, step: 5 }));
+    row2.append(rot, op);
+    body.append(row2);
+    const actions = document.createElement('div');
+    actions.className = 'add-row';
+    const dup = document.createElement('button');
+    dup.textContent = 'Duplicate';
+    dup.onclick = () => {
+      const copy = JSON.parse(JSON.stringify(item));
+      copy.id = newId(); copy.x = (Number(item.x) || 0) + 20; copy.y = (Number(item.y) || 0) + 20;
+      canvas.elements.push(copy); selectedId = copy.id;
+      markDirty(); renderLayers(); renderStage(); renderInspector();
+    };
+    const del = document.createElement('button');
+    del.className = 'danger';
+    del.textContent = 'Delete';
+    del.onclick = () => removeElement(item.id);
+    actions.append(dup, del);
+    body.append(actions);
+  }
+
+  function entityPicker(item) {
+    const wrap = document.createElement('div');
+    wrap.className = 'field';
+    const label = document.createElement('label');
+    label.textContent = 'Entity';
+    const search = document.createElement('input');
+    search.type = 'search';
+    search.placeholder = 'Search entities…';
+    search.value = item.entity || '';
+    const results = document.createElement('div');
+    results.id = 'entity-results';
+    let timer = null;
+    const load = async () => {
+      try {
+        const data = await request(`api/entities?q=${encodeURIComponent(search.value)}&limit=40`);
+        results.textContent = '';
+        if (!data.items.length) {
+          const none = document.createElement('p');
+          none.className = 'hint';
+          none.textContent = data.error || 'No matching entities.';
+          results.append(none);
+          return;
+        }
+        for (const entry of data.items) {
+          const hit = document.createElement('button');
+          hit.type = 'button';
+          hit.className = 'entity-hit';
+          hit.textContent = entry.entity_id;
+          const sub = document.createElement('span');
+          sub.className = 'sub';
+          sub.textContent = `${entry.name} · ${entry.state}${entry.unit ? ' ' + entry.unit : ''}`;
+          hit.append(sub);
+          hit.onclick = () => { item.entity = entry.entity_id; markDirty(); renderInspector(); renderStage(); refreshValues(); };
+          results.append(hit);
+        }
+      } catch (error) {
+        results.textContent = '';
+        const failed = document.createElement('p');
+        failed.className = 'hint';
+        failed.textContent = error.message;
+        results.append(failed);
+      }
+    };
+    search.addEventListener('input', () => { clearTimeout(timer); timer = setTimeout(load, 220); });
+    search.addEventListener('focus', load);
+    wrap.append(label, search, results);
+    if (item.entity) { const current = document.createElement('p'); current.className = 'hint'; current.textContent = `Using ${item.entity}`; wrap.append(current); }
+    return wrap;
+  }
+
+  // --------------------------------------------------------------- preview
+  function schedulePreview() {
+    if (!previewOn) return;
+    clearTimeout(previewTimer);
+    previewTimer = setTimeout(drawPreview, 600);
+  }
+  async function drawPreview() {
+    if (!previewOn || previewBusy) return;
+    previewBusy = true;
+    try {
+      const response = await fetch(api('api/preview'), {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(canvas)
+      });
+      if (!response.ok) {
+        const payload = await response.json().catch(() => ({}));
+        throw new Error(payload.error || `Preview failed (${response.status})`);
+      }
+      const blob = await response.blob();
+      $('preview-image').src = URL.createObjectURL(blob);
+      setStatus(`Preview ${new Date().toLocaleTimeString()}`);
+    } catch (error) {
+      setStatus(error.message, true);
+    } finally {
+      previewBusy = false;
+    }
+  }
+  $('preview-toggle').onclick = () => {
+    previewOn = !previewOn;
+    stageWrap.classList.toggle('previewing', previewOn);
+    $('preview-toggle').textContent = previewOn ? 'Hide preview' : 'Real preview';
+    if (previewOn) {
+      drawPreview();
+      previewClock = setInterval(drawPreview, 5000);
+    } else {
+      clearInterval(previewClock);
+    }
+  };
+
+  // ------------------------------------------------------------ canvases IO
+  let uploads = [];
+  async function upload(file) {
+    const response = await fetch(api(`api/uploads?name=${encodeURIComponent(file.name)}`), {
+      method: 'POST', headers: { 'Content-Type': file.type || 'image/png' }, body: file
+    });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload.error || 'Upload failed');
+    await loadUploads();
+    return payload;
+  }
+  async function loadUploads() {
+    try {
+      const data = await request('api/uploads');
+      uploads = data.items;
+      fillImageSelectors();
+    } catch (error) { /* the picker just stays empty */ }
+  }
+  function fillImageSelectors() {
+    for (const select of [$('bg-image')]) {
+      const current = select.value;
+      select.textContent = '';
+      for (const [value, label] of [['', 'No image'], ...uploads.map(name => [name, name])]) {
+        const option = document.createElement('option');
+        option.value = value; option.textContent = label;
+        select.append(option);
+      }
+      select.value = current;
+    }
+  }
+  async function load() {
+    const data = await request('api/canvases');
+    canvases = data;
+    const picker = $('canvas-pick');
+    picker.textContent = '';
+    for (const entry of canvases) {
+      const option = document.createElement('option');
+      option.value = entry.id; option.textContent = entry.name;
+      picker.append(option);
+    }
+    if (!canvases.length) {
+      canvas = blankCanvas();
+      $('layer-list').textContent = '';
+      renderLayers(); renderStage(); renderInspector(); renderUrls();
+      setStatus('Create a canvas to begin');
+      return;
+    }
+    openCanvas(canvases[0].id);
+  }
+  function openCanvas(id) {
+    const found = canvases.find(entry => entry.id === id) || canvases[0];
+    canvas = JSON.parse(JSON.stringify(found));
+    canvas.elements = canvas.elements || [];
+    if (!canvas.background) canvas.background = { color: '#0f172a', image: '', fit: 'cover' };
+    selectedId = null;
+    dirty = false;
+    $('canvas-pick').value = canvas.id;
+    $('canvas-width').value = canvas.width;
+    $('canvas-height').value = canvas.height;
+    $('bg-color').value = canvas.background.color || '#0f172a';
+    $('bg-image').value = canvas.background.image || '';
+    $('bg-fit').value = canvas.background.fit || 'cover';
+    renderLayers(); renderStage(); renderInspector(); renderUrls();
+    refreshValues();
+    setStatus('Saved');
+    if (previewOn) drawPreview();
+  }
+  function renderUrls() {
+    const box = $('urls');
+    box.textContent = '';
+    if (!canvas.id) {
+      const hint = document.createElement('p');
+      hint.className = 'hint';
+      hint.textContent = 'Save the canvas to get its image URL.';
+      box.append(hint);
+      return;
+    }
+    const rows = [
+      ['PNG', directUrl(`/canvas/${canvas.id}.png`)],
+      ['JPG', directUrl(`/canvas/${canvas.id}.jpg`)],
+      ['Scale down', directUrl(`/canvas/${canvas.id}.png`, '&w=1280&h=720')],
+      ['In Home Assistant (relative)', api(`canvas/${canvas.id}.png`)]
+    ];
+    for (const [label, value] of rows) {
+      const line = document.createElement('div');
+      line.className = 'url-line';
+      const text = document.createElement('div');
+      text.className = 'url-box';
+      text.textContent = value;
+      const copy = document.createElement('button');
+      copy.textContent = '⧉';
+      copy.title = 'Copy';
+      copy.onclick = async () => {
+        try { await navigator.clipboard.writeText(value); copy.textContent = '✓'; }
+        catch (error) { copy.textContent = '!'; }
+        setTimeout(() => { copy.textContent = '⧉'; }, 1200);
+      };
+      line.append(text, copy);
+      const heading = document.createElement('p');
+      heading.className = 'hint';
+      heading.textContent = label;
+      box.append(heading, line);
+    }
+    const note = document.createElement('p');
+    note.className = 'hint';
+    note.textContent = 'Every request re-reads the entities and re-renders, so the picture is always current. '
+      + 'Media players and displays must be able to reach this host.';
+    box.append(note);
+  }
+
+  // ------------------------------------------------------------ header wiring
+  const PRESET_OPTIONS = () => [['', 'Custom'], ...PRESETS.map(([label, width, height]) => [label, `${label} (${width}×${height})`])];
+  function fillPresets() {
+    const picker = $('preset');
+    picker.textContent = '';
+    for (const [value, label] of PRESET_OPTIONS()) {
+      const option = document.createElement('option');
+      option.value = value; option.textContent = value ? label : 'Custom';
+      picker.append(option);
+    }
+    const match = PRESETS.find(([, width, height]) => width === canvas.width && height === canvas.height);
+    picker.value = match ? match[0] : '';
+  }
+  $('preset').addEventListener('change', () => {
+    const found = PRESETS.find(([label]) => label === $('preset').value);
+    if (!found) return;
+    canvas.width = found[1]; canvas.height = found[2];
+    $('canvas-width').value = canvas.width; $('canvas-height').value = canvas.height;
+    markDirty(); renderStage();
+  });
+  $('canvas-width').addEventListener('input', event => { canvas.width = Math.max(64, Number(event.target.value) || 64); markDirty(); renderStage(); fillPresets(); });
+  $('canvas-height').addEventListener('input', event => { canvas.height = Math.max(64, Number(event.target.value) || 64); markDirty(); renderStage(); fillPresets(); });
+  $('bg-color').addEventListener('input', event => { canvas.background.color = event.target.value; markDirty(); renderStage(); });
+  $('bg-image').addEventListener('change', event => { canvas.background.image = event.target.value; markDirty(); renderStage(); });
+  $('bg-fit').addEventListener('change', event => { canvas.background.fit = event.target.value; markDirty(); renderStage(); });
+
+  for (const button of document.querySelectorAll('[data-add]')) {
+    button.onclick = () => {
+      const type = button.dataset.add;
+      const base = { id: newId(), type, name: '', x: Math.round(canvas.width * 0.08), y: Math.round(canvas.height * 0.4), rotation: 0, opacity: 100, visible: true };
+      let item;
+      if (type === 'text') item = { ...base, text: 'Hello', size: Math.round(canvas.height / 8), colour: '#f8fafc', font: 'system', bold: true, italic: false, align: 'left', shadow: true, line_height: 1.15, wrap: 0 };
+      else if (type === 'image') item = { ...base, file: '', width: Math.round(canvas.width / 5), height: 0 };
+      else item = { ...base, entity: '', attribute: '', prefix: '', suffix: '', decimals: -1, show_unit: true, size: Math.round(canvas.height / 8), colour: '#7dd3fc', font: 'system', bold: true, italic: false, align: 'left', shadow: true, line_height: 1.15, wrap: 0, y: Math.round(canvas.height * 0.55) };
+      canvas.elements.push(item);
+      selectedId = item.id;
+      markDirty(); renderLayers(); renderStage(); renderInspector();
+    };
+  }
+
+  $('save').onclick = async () => {
+    try {
+      setStatus('Saving…');
+      const method = canvas.id ? 'PUT' : 'POST';
+      const path = canvas.id ? `api/canvases/${canvas.id}` : 'api/canvases';
+      const saved = await request(path, { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(canvas) });
+      const list = await request('api/canvases');
+      canvases = list;
+      openCanvas(saved.id);
+      toast('Saved');
+    } catch (error) {
+      setStatus(error.message, true);
+      toast(error.message, true);
+    }
+  };
+  $('new-canvas').onclick = async () => {
+    try {
+      const name = `Canvas ${canvases.length + 1}`;
+      const saved = await request('api/canvases', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ...blankCanvas(), name })
+      });
+      await load();
+      openCanvas(saved.id);
+    } catch (error) { toast(error.message, true); }
+  };
+  $('duplicate-canvas').onclick = async () => {
+    try {
+      const copy = JSON.parse(JSON.stringify(canvas));
+      delete copy.id;
+      copy.name = `${canvas.name} copy`;
+      copy.elements = (copy.elements || []).map(item => ({ ...item, id: newId() }));
+      const saved = await request('api/canvases', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(copy) });
+      await load();
+      openCanvas(saved.id);
+      toast('Duplicated');
+    } catch (error) { toast(error.message, true); }
+  };
+  $('delete-canvas').onclick = async () => {
+    if (!canvas.id) return;
+    const button = $('delete-canvas');
+    if (button.dataset.armed !== '1') {
+      button.dataset.armed = '1';
+      button.textContent = 'Really delete?';
+      setTimeout(() => { button.dataset.armed = ''; button.textContent = 'Delete'; }, 3000);
+      return;
+    }
+    try {
+      await request(`api/canvases/${canvas.id}`, { method: 'DELETE' });
+      button.dataset.armed = ''; button.textContent = 'Delete';
+      await load();
+      toast('Deleted');
+    } catch (error) { toast(error.message, true); }
+  };
+  $('canvas-pick').onchange = event => openCanvas(event.target.value);
+
+  window.addEventListener('beforeunload', event => { if (dirty) event.preventDefault(); });
+
+  fillPresets();
+  loadUploads().then(load).catch(error => setStatus(error.message, true));
+  setInterval(refreshValues, 3000);
+  setInterval(() => { if (dirty) setStatus('Unsaved changes'); }, 15000);
+})();
+</script>
+</body>
+</html>
