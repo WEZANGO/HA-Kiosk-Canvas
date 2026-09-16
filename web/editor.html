@@ -948,6 +948,7 @@
           renderInspector();
           fillImageSelectors();
         }),
+        animationSmoothnessField(),
         savedSizesField(),
       );
       return;
@@ -1208,6 +1209,32 @@
   }
   const ANIM_KEY = /^(jump|pulse|blink|shake|wobble|slide)$/;
   const canvasAnimates = () => canvas.elements.some(item => item.visible !== false && ANIM_KEY.test(String(item.animation || '')));
+
+  const FPS_CHOICES = [['10', 'Smaller file (10 fps)'], ['15', 'Light (15 fps)'],
+                       ['25', 'Smooth (25 fps)'], ['40', 'Very smooth (40 fps)'],
+                       ['50', 'Maximum (50 fps)']];
+
+  function animationSmoothnessField() {
+    const fps = Number(canvas.animation_fps) || 25;
+    const wrap = document.createElement('div');
+    wrap.append(field('Animation smoothness', select(FPS_CHOICES, String(fps), value => {
+      canvas.animation_fps = Number(value);
+      markDirty();
+      renderInspector();
+    })));
+    const hint = document.createElement('p');
+    hint.className = 'hint';
+    const animating = canvas.elements.filter(item => item.visible !== false && ANIM_KEY.test(String(item.animation || '')));
+    if (animating.length) {
+      const slowest = Math.max(...animating.map(item => Number(item.animation_speed) || 1.2));
+      hint.textContent = `Used by the animated GIF/WebP URLs: about ${Math.round(slowest * fps)} frames per cycle, `
+        + 'so higher means smoother and a bigger file. GIF tops out near 40 fps.';
+    } else {
+      hint.textContent = 'Used only when an element has an animation. Higher means smoother and a bigger file.';
+    }
+    wrap.append(hint);
+    return wrap;
+  }
 
   function animationFields(item, update) {
     const kind = ANIM_KINDS.some(entry => entry[0] === item.animation) ? item.animation : 'none';

@@ -1,5 +1,5 @@
 name: Kiosk Canvas Displays
-version: 0.1.5
+version: 0.1.6
 slug: kiosk_canvas_displays
 description: Compose text, icons and live Home Assistant entity values on a canvas, served as a dynamic PNG/JPG image URL for automations, kiosks and media screens.
 url: https://github.com/example/kiosk-canvas-displays

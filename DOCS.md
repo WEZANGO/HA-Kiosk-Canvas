@@ -172,8 +172,24 @@ Fetch the animation from an animated URL — the still URLs keep working:
 /canvas/<id>.png      one frame: the resting pose, i.e. exactly the design
 ```
 
-- `?frames=8` renders fewer frames (smaller file, choppier). The frame delay is
-  derived from the cycle so the animation runs at the speed you set.
+- **Animation smoothness** is a canvas setting (10 / 15 / 25 / 40 / 50 fps,
+  default 25). With one jumping headline at the default 720px width the GIF costs
+  roughly 10 fps -> 86 KB, 15 -> 129 KB, 25 (default) -> 186 KB, 40 -> 244 KB,
+  50 -> 316 KB; the same animation as WebP is about 40% smaller. Measurably
+  smoother too: the largest per-frame movement of the headline drops from 7px at
+  10 fps to 3px at 25 fps and 2px at 50 fps.
+- **Elements share one loop.** One animated image can only run one loop, so the
+  slowest animated element sets the period and every faster element's speed is
+  rounded to a whole number of cycles inside it (a 1.2s hop next to a 2s pulse
+  becomes a 2s loop with the hop running twice, i.e. every 1.0s). A loop that long
+  needs more frames, so canvases mixing different speeds get noticeably bigger
+  files - the demo above with a second animated line: 280 KB at 10 fps, 675 KB at
+  25 fps. Elements sharing a speed share frames, and `?w=` still shrinks things.
+- `?fps=40` overrides the smoothness for a single request and `?frames=N` asks for
+  an explicit frame count; N acts as a ceiling, stepping down to a count that
+  keeps the cycle time exact, so asking for more frames never speeds the animation
+  up. GIF stores delays in 10ms steps and browsers bump anything under 20ms up to
+  100ms, so GIF tops out near 40-50 fps; WebP keeps millisecond precision.
 - `?w=` / `?h=` still apply. Animated output defaults to **720 px wide** when you
   do not pass a size, because a dozen-plus full frames at 1080p is a heavy file
   for a media device to pull.

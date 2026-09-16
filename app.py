@@ -48,7 +48,9 @@ ELEMENT_TYPES = ("text", "image", "entity")
 # PNG/JPG (frame 0) is always the untouched layout.
 ANIMATIONS = ("none", "jump", "pulse", "blink", "shake", "wobble", "slide")
 ANIMATION_DEFAULTS = {"jump": 26, "shake": 14, "slide": 180, "wobble": 9, "pulse": 16, "blink": 0}
-ANIMATION_FRAMES = 16          # frames per cycle when rendering an animated image
+ANIMATION_FRAMES = 30           # frames per cycle when a caller asks for a count
+ANIMATION_FPS = 25              # default smoothness: smooth without bloating the file
+ANIMATION_FPS_RANGE = (5, 50)   # browsers clamp sub-20ms delays up to 100ms, so 50 fps is the ceiling
 ANIMATED_FORMATS = ("GIF", "WEBP")
 ALIGNMENTS = ("left", "center", "right")
 UPLOAD_TYPES = {"image/png": ".png", "image/jpeg": ".jpg", "image/webp": ".webp", "image/gif": ".gif"}
@@ -497,6 +499,9 @@ def clean_canvas(payload: dict, existing: dict | None = None) -> dict:
         "name": name,
         "width": int(clamp_number(payload.get("width", existing.get("width")), CANVAS_MIN, CANVAS_MAX, 1280)),
         "height": int(clamp_number(payload.get("height", existing.get("height")), CANVAS_MIN, CANVAS_MAX, 720)),
+        # Smoothness of the animated GIF/WebP output, in frames per second.
+        "animation_fps": int(clamp_number(payload.get("animation_fps", existing.get("animation_fps")),
+                                          ANIMATION_FPS_RANGE[0], ANIMATION_FPS_RANGE[1], ANIMATION_FPS)),
         "background": {
             "color": as_colour(background.get("color", previous.get("color")), "#0f172a"),
             "image": as_text(background.get("image", previous.get("image", "")), 128),
@@ -836,6 +841,43 @@ def animation_cycles(element: dict, period: float) -> int:
     return max(1, int(round(period / speed))) if period > 0 else 1
 
 
+def animation_timing(canvas: dict, period: float, image_format: str,
+                     frames: int | None = None, fps: float | None = None) -> tuple[int, int]:
+    """(frame count, per-frame delay in ms) for the animated output.
+
+    A caller can ask for an explicit frame count (`?frames=`) or a smoothness in
+    frames per second (`?fps=`, or the canvas's own setting). Two constraints keep
+    the result playing correctly rather than merely looking right in one viewer:
+      * GIF stores delays in 10ms steps, so the delay is snapped to that grid and
+        the count derived from it — otherwise the animation drifts off-speed;
+      * browsers clamp delays under 20ms up to 100ms, so 50 fps is the ceiling.
+    WebP keeps millisecond precision, so it can hold the exact requested rate."""
+    gif = image_format.upper() == "GIF"
+
+    def snap(delay_ms: float) -> int:
+        if gif:
+            return max(20, int(delay_ms / 10.0 + 0.5) * 10)
+        return max(10, int(round(delay_ms)))
+
+    if frames:
+        # An explicit count is a ceiling: step down to a count whose delay lands
+        # on the format's grid, so asking for more frames can never change how
+        # fast the animation actually plays.
+        wanted = int(clamp(int(frames), 2, 150))
+        for count in range(wanted if wanted % 2 == 0 else wanted - 1, 1, -2):
+            delay = snap(period * 1000 / count)
+            if abs(count * delay - period * 1000) <= 10:
+                return count, delay
+        return 2, snap(period * 500)
+    wanted = clamp_number(fps if fps is not None else canvas.get("animation_fps"),
+                          ANIMATION_FPS_RANGE[0], ANIMATION_FPS_RANGE[1], ANIMATION_FPS)
+    delay = snap(1000.0 / wanted)
+    count = int(clamp(int(round(period * 1000 / delay)), 2, 150))
+    if count % 2 == 1:
+        count += 1
+    return count, snap(period * 1000 / count)
+
+
 def canvas_animates(canvas: dict) -> bool:
     return any(as_flag(item.get("visible"), True) and str(item.get("animation", "none")) not in ("", "none")
                for item in canvas.get("elements", []))
@@ -917,7 +959,8 @@ def encode_image(image: Image.Image, frames: list[Image.Image], image_format: st
 
 
 def render_canvas(canvas: dict, width: int | None = None, height: int | None = None,
-                  image_format: str = "PNG", frames: int | None = None) -> tuple[bytes, str]:
+                  image_format: str = "PNG", frames: int | None = None,
+                  fps: float | None = None) -> tuple[bytes, str]:
     """Render a canvas to image bytes. `width`/`height` scale the whole design
     (geometry and font sizes together, so text stays sharp) instead of resizing
     the finished picture.
@@ -957,19 +1000,7 @@ def render_canvas(canvas: dict, width: int | None = None, height: int | None = N
         return encode_image(draw_frame(canvas, out_width, out_height, scale, 0.0, 0.0, lookup), [], image_format)
 
     period = animation_period(canvas)
-    wanted = int(clamp_number(frames, 4, 60, ANIMATION_FRAMES))
-    # Two constraints on the frame count, both about playing the animation
-    # properly rather than merely looking right in one viewer:
-    #  * GIF/WebP store delays in 10ms steps, so the count must divide the cycle
-    #    into whole 10ms frames or the whole animation drifts off-speed;
-    #  * an even count avoids sampling two identical poses either side of a
-    #    symmetric peak (a "jump" does exactly that), which encoders merge into
-    #    one longer frame.
-    candidates = [count for count in range(4, 61)
-                  if count % 2 == 0 and round(period * 1000 / count) % 10 == 0]
-    count = (min(candidates, key=lambda value: (abs(value - wanted), -value))
-             if candidates else wanted)
-    duration = max(20, int(round(period * 1000 / count / 10.0)) * 10)
+    count, duration = animation_timing(canvas, period, image_format, frames=frames, fps=fps)
     rendered = [draw_frame(canvas, out_width, out_height, scale, period * index / count, period, lookup)
                 for index in range(count)]
     return encode_image(rendered[0], rendered[1:], image_format, duration)
@@ -1087,11 +1118,15 @@ class Handler(BaseHTTPRequestHandler):
                 cached = RENDER_CACHE.get(key)
                 if cached and time.time() - cached[0] < RENDER_TTL:
                     return self.send_bytes(cached[1][0], cached[1][1])
-        frames = int(clamp_number(self.query().get("frames", [""])[0], 4, 60, ANIMATION_FRAMES))
-        # The frame count changes the bytes, so it belongs in the cache key.
-        key = key + (frames,)
+        frames_raw = str(self.query().get("frames", [""])[0]).strip()
+        fps_raw = str(self.query().get("fps", [""])[0]).strip()
+        frames = int(clamp_number(frames_raw, 2, 150, ANIMATION_FRAMES)) if frames_raw else None
+        fps = (float(clamp_number(fps_raw, ANIMATION_FPS_RANGE[0], ANIMATION_FPS_RANGE[1], ANIMATION_FPS))
+               if fps_raw else None)
+        # Frame count and smoothness change the bytes, so they belong in the key.
+        key = key + (frames, fps)
         try:
-            data, content_type = render_canvas(canvas, width, height, image_format, frames)
+            data, content_type = render_canvas(canvas, width, height, image_format, frames, fps)
         except ValueError as error:
             return self.send_json({"error": str(error)}, 502)
         with RENDER_LOCK:
@@ -1108,9 +1143,13 @@ class Handler(BaseHTTPRequestHandler):
         except (ValueError, json.JSONDecodeError) as error:
             return self.send_json({"error": str(error)}, 400)
         width, height = self.size_params()
-        frames = int(clamp_number(self.query().get("frames", [""])[0], 4, 60, ANIMATION_FRAMES))
+        frames_raw = str(self.query().get("frames", [""])[0]).strip()
+        fps_raw = str(self.query().get("fps", [""])[0]).strip()
+        frames = int(clamp_number(frames_raw, 2, 150, ANIMATION_FRAMES)) if frames_raw else None
+        fps = (float(clamp_number(fps_raw, ANIMATION_FPS_RANGE[0], ANIMATION_FPS_RANGE[1], ANIMATION_FPS))
+               if fps_raw else None)
         try:
-            data, content_type = render_canvas(canvas, width, height, self.image_format(), frames)
+            data, content_type = render_canvas(canvas, width, height, self.image_format(), frames, fps)
         except ValueError as error:
             return self.send_json({"error": str(error)}, 502)
         self.send_bytes(data, content_type)
